@@ -1,0 +1,20 @@
+{
+  "title": "Newer fixture chat",
+  "createdAt": "2026-03-20T18:15:00.000Z",
+  "updatedAt": "2026-03-20T18:20:00.000Z",
+  "model": "qwen/qwen3-14b",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello"
+    },
+    {
+      "role": "assistant",
+      "content": "Hi"
+    },
+    {
+      "role": "user",
+      "content": "List my chats"
+    }
+  ]
+}

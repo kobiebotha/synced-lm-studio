@@ -1,0 +1,212 @@
+:root {
+  color: #1f2328;
+  background:
+    radial-gradient(circle at top left, rgba(255, 222, 173, 0.65), transparent 32%),
+    radial-gradient(circle at bottom right, rgba(110, 158, 255, 0.2), transparent 36%),
+    #f5efe6;
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+button,
+textarea,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+}
+
+.auth-card,
+.panel,
+.chat-panel,
+.operations-panel,
+.conversation-panel {
+  background: rgba(255, 251, 247, 0.88);
+  border: 1px solid rgba(31, 35, 40, 0.08);
+  box-shadow: 0 20px 60px rgba(80, 53, 34, 0.12);
+  backdrop-filter: blur(18px);
+}
+
+.auth-card {
+  width: min(28rem, 100%);
+  display: grid;
+  gap: 1rem;
+  padding: 2rem;
+  border-radius: 1.75rem;
+}
+
+.auth-card label {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.auth-card input,
+.composer textarea {
+  width: 100%;
+  border-radius: 1rem;
+  border: 1px solid rgba(31, 35, 40, 0.15);
+  background: rgba(255, 255, 255, 0.8);
+  padding: 0.85rem 1rem;
+}
+
+.auth-card button,
+.panel button,
+.composer button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.8rem 1.2rem;
+  background: #1f2328;
+  color: white;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 1.5rem;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 20rem 1fr;
+}
+
+.rail,
+.workspace {
+  display: grid;
+  gap: 1rem;
+}
+
+.workspace {
+  grid-template-columns: 18rem minmax(0, 1fr) 18rem;
+  align-items: start;
+}
+
+.panel,
+.conversation-panel,
+.chat-panel,
+.operations-panel {
+  border-radius: 1.5rem;
+  padding: 1rem;
+}
+
+.kicker,
+.message-role,
+.status-pill,
+.conversation-row small,
+.device-list small,
+.model-row small,
+.operation-row small {
+  font-family: "SF Mono", "Menlo", "Monaco", monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(18, 140, 126, 0.12);
+  color: #0f6d61;
+}
+
+.device-list,
+.conversation-list,
+.model-list,
+.operation-list {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 1rem;
+}
+
+.list-row,
+.conversation-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 0;
+  background: rgba(255, 255, 255, 0.65);
+  padding: 0.85rem 1rem;
+  border-radius: 1rem;
+  text-align: left;
+}
+
+.list-row.active,
+.conversation-row.active {
+  background: #1f2328;
+  color: white;
+}
+
+.chat-panel {
+  min-height: calc(100vh - 3rem);
+  display: grid;
+  grid-template-rows: 1fr auto;
+}
+
+.messages {
+  display: grid;
+  gap: 0.9rem;
+  align-content: start;
+}
+
+.message {
+  max-width: 48rem;
+  padding: 1rem 1.15rem;
+  border-radius: 1.3rem;
+}
+
+.message.user {
+  justify-self: end;
+  background: #1f2328;
+  color: white;
+}
+
+.message.assistant {
+  justify-self: start;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.composer {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 1rem;
+}
+
+.composer textarea {
+  min-height: 7rem;
+  resize: vertical;
+}
+
+.error-banner {
+  color: #8a1f1f;
+}
+
+@media (max-width: 1100px) {
+  .app-shell,
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-panel {
+    min-height: auto;
+  }
+}

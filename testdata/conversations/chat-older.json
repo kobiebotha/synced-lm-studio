@@ -1,0 +1,14 @@
+{
+  "chatTitle": "Older fixture chat",
+  "created_at": "2026-03-20T17:00:00.000Z",
+  "lastModified": "2026-03-20T17:30:00.000Z",
+  "metadata": {
+    "modelName": "llama/3.2"
+  },
+  "entries": [
+    {
+      "role": "user",
+      "content": "First message"
+    }
+  ]
+}

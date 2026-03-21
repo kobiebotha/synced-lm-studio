@@ -1,0 +1,45 @@
+bucket_definitions:
+  user_devices:
+    parameters: |
+      SELECT request.user_id() AS user_id
+    data:
+      - SELECT * FROM devices WHERE owner_user_id = bucket.user_id
+
+  device_models:
+    parameters: |
+      SELECT id AS device_id
+      FROM devices
+      WHERE owner_user_id = request.user_id()
+    data:
+      - SELECT * FROM device_models WHERE device_id = bucket.device_id
+
+  user_conversations:
+    parameters: |
+      SELECT request.user_id() AS user_id
+    data:
+      - SELECT * FROM conversations WHERE owner_user_id = bucket.user_id
+
+  conversation_messages:
+    parameters: |
+      SELECT id AS conversation_id
+      FROM conversations
+      WHERE owner_user_id = request.user_id()
+    data:
+      - SELECT * FROM messages WHERE conversation_id = bucket.conversation_id
+      - SELECT * FROM lmstudio_threads WHERE conversation_id = bucket.conversation_id
+
+  device_operations:
+    parameters: |
+      SELECT id AS device_id
+      FROM devices
+      WHERE owner_user_id = request.user_id()
+    data:
+      - SELECT * FROM device_operations WHERE device_id = bucket.device_id
+
+  operation_events:
+    parameters: |
+      SELECT id AS operation_id
+      FROM device_operations
+      WHERE requested_by_user_id = request.user_id()
+    data:
+      - SELECT * FROM operation_events WHERE operation_id = bucket.operation_id
