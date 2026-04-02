@@ -1,7 +1,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
-import { PowerSyncDatabase, UpdateType } from "@powersync/node";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { PowerSyncDatabase, SyncStatus, UpdateType } from "@powersync/node";
 import type {
   AbstractPowerSyncDatabase,
   CrudEntry,
@@ -13,6 +13,7 @@ import {
   AppSchema,
   BOOLEAN_COLUMNS
 } from "@synced-lm-studio/shared";
+import { ensureBridgeSession } from "./auth";
 import { bridgeConfig } from "./config";
 
 function normalizeRow(table: string, row: Record<string, unknown>): Record<string, unknown> {
@@ -53,26 +54,6 @@ async function recordUploadError(
   );
 }
 
-async function ensureSession(supabase: SupabaseClient): Promise<Session> {
-  const { data } = await supabase.auth.getSession();
-  if (data.session) {
-    console.log("[bridge] Reusing existing Supabase session");
-    return data.session;
-  }
-
-  console.log("[bridge] Signing in to Supabase");
-  const { data: signedIn, error } = await supabase.auth.signInWithPassword({
-    email: bridgeConfig.supabaseEmail,
-    password: bridgeConfig.supabasePassword
-  });
-
-  if (error || !signedIn.session) {
-    throw error ?? new Error("Failed to create Supabase session");
-  }
-
-  return signedIn.session;
-}
-
 function decodeJwtPart(raw: string): Record<string, unknown> | null {
   try {
     const normalized = raw.replace(/-/g, "+").replace(/_/g, "/");
@@ -102,6 +83,111 @@ function summarizeJwt(token: string) {
   };
 }
 
+type LoggedSyncStatus = {
+  connected: boolean;
+  connecting: boolean;
+  hasSynced: boolean | null;
+  downloading: boolean;
+  uploading: boolean;
+  downloadError: string | null;
+  uploadError: string | null;
+  lastSyncedAt: string | null;
+  progressBucket: number | null;
+  progressLabel: string | null;
+};
+
+function toLoggedSyncStatus(status: SyncStatus): LoggedSyncStatus {
+  const dataFlow = status.dataFlowStatus;
+  const progress = status.downloadProgress;
+  const percent =
+    progress && progress.totalOperations > 0
+      ? Math.floor(progress.downloadedFraction * 100)
+      : null;
+
+  return {
+    connected: status.connected,
+    connecting: status.connecting,
+    hasSynced: status.hasSynced ?? null,
+    downloading: dataFlow.downloading ?? false,
+    uploading: dataFlow.uploading ?? false,
+    downloadError: dataFlow.downloadError?.message ?? null,
+    uploadError: dataFlow.uploadError?.message ?? null,
+    lastSyncedAt: status.lastSyncedAt?.toISOString() ?? null,
+    progressBucket: percent === null ? null : Math.min(100, Math.floor(percent / 10) * 10),
+    progressLabel:
+      progress && percent !== null
+        ? `${progress.downloadedOperations}/${progress.totalOperations} (${percent}%)`
+        : null
+  };
+}
+
+function formatLoggedSyncStatus(status: LoggedSyncStatus) {
+  const parts: string[] = [];
+
+  if (status.connecting) {
+    parts.push("connecting");
+  } else {
+    parts.push(status.connected ? "connected" : "disconnected");
+  }
+
+  const activity: string[] = [];
+  if (status.downloading) {
+    activity.push(
+      status.progressLabel ? `downloading ${status.progressLabel}` : "downloading"
+    );
+  }
+  if (status.uploading) {
+    activity.push("uploading");
+  }
+  parts.push(activity.length > 0 ? activity.join(", ") : "idle");
+
+  if (status.hasSynced === true) {
+    parts.push(status.lastSyncedAt ? `synced ${status.lastSyncedAt}` : "synced");
+  } else if (status.hasSynced === false) {
+    parts.push("sync pending");
+  }
+
+  if (status.downloadError) {
+    parts.push(`download error: ${status.downloadError}`);
+  }
+  if (status.uploadError) {
+    parts.push(`upload error: ${status.uploadError}`);
+  }
+
+  return parts.join(" | ");
+}
+
+class PowerSyncStatusLogger {
+  private previous: LoggedSyncStatus | null = null;
+
+  log(status: SyncStatus) {
+    const next = toLoggedSyncStatus(status);
+    if (!this.shouldLog(next)) {
+      return;
+    }
+
+    console.log("[bridge] PowerSync", formatLoggedSyncStatus(next));
+    this.previous = next;
+  }
+
+  private shouldLog(next: LoggedSyncStatus) {
+    const previous = this.previous;
+    if (!previous) {
+      return true;
+    }
+
+    return (
+      previous.connected !== next.connected ||
+      previous.connecting !== next.connecting ||
+      previous.hasSynced !== next.hasSynced ||
+      previous.downloading !== next.downloading ||
+      previous.downloadError !== next.downloadError ||
+      previous.uploadError !== next.uploadError ||
+      (next.downloading && previous.progressBucket !== next.progressBucket)
+    );
+  }
+}
+
 async function upsertRow(supabase: SupabaseClient, table: string, row: Record<string, unknown>) {
   return supabase.from(table).upsert(row, { onConflict: "id" });
 }
@@ -123,7 +209,7 @@ class BridgeConnector implements PowerSyncBackendConnector {
   constructor(private readonly supabase: SupabaseClient) {}
 
   async fetchCredentials(): Promise<PowerSyncCredentials> {
-    const session = await ensureSession(this.supabase);
+    const session = await ensureBridgeSession(this.supabase);
     console.log("[bridge] PowerSync credentials prepared", summarizeJwt(session.access_token));
     return {
       endpoint: bridgeConfig.powersyncUrl,
@@ -187,7 +273,7 @@ export async function createBridgeDatabase() {
     }
   });
 
-  const session = await ensureSession(supabase);
+  const session = await ensureBridgeSession(supabase);
   console.log("[bridge] Supabase session ready", { userId: session.user.id });
 
   const db = new PowerSyncDatabase({
@@ -196,10 +282,11 @@ export async function createBridgeDatabase() {
       dbFilename: bridgeConfig.bridgeDbFilename
     }
   });
+  const statusLogger = new PowerSyncStatusLogger();
 
   db.registerListener({
     statusChanged: (status) => {
-      console.log("[bridge] PowerSync status", JSON.stringify(status));
+      statusLogger.log(status);
     }
   });
 

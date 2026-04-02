@@ -7,9 +7,12 @@ export const devices = new Table(
     machine_key: column.text,
     display_name: column.text,
     status: column.text,
+    pairing_status: column.text,
+    pairing_code: column.text,
     platform: column.text,
     bridge_version: column.text,
     metadata_json: column.text,
+    paired_at: column.text,
     last_seen_at: column.text,
     created_at: column.text,
     updated_at: column.text
@@ -18,7 +21,8 @@ export const devices = new Table(
     indexes: {
       owner: ["owner_user_id"],
       machine: ["machine_key"],
-      status: ["status"]
+      status: ["status"],
+      pairing: ["pairing_status"]
     }
   }
 );

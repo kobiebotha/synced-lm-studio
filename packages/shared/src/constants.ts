@@ -28,6 +28,11 @@ export const DEVICE_STATUS = {
   offline: "offline"
 } as const;
 
+export const DEVICE_PAIRING_STATUS = {
+  pending: "pending",
+  paired: "paired"
+} as const;
+
 export const MESSAGE_ROLE = {
   system: "system",
   user: "user",

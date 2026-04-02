@@ -48,20 +48,7 @@ async function ensureSession(supabase: SupabaseClient) {
     return data.session;
   }
 
-  if (!webConfig.devEmail || !webConfig.devPassword) {
-    throw new Error("No active Supabase session");
-  }
-
-  const { data: signedIn, error } = await supabase.auth.signInWithPassword({
-    email: webConfig.devEmail,
-    password: webConfig.devPassword
-  });
-
-  if (error || !signedIn.session) {
-    throw error ?? new Error("Unable to sign in with the configured dev credentials");
-  }
-
-  return signedIn.session;
+  throw new Error("No active Supabase session");
 }
 
 class WebConnector implements PowerSyncBackendConnector {

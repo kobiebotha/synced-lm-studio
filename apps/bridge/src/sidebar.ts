@@ -22,6 +22,8 @@ export type ImportedConversationFileMessage = {
 export type ImportedConversationFile = {
   title: string;
   modelIdentifier: string | null;
+  createdAtMs: number | null;
+  lastActivityAtMs: number | null;
   messages: ImportedConversationFileMessage[];
 };
 
@@ -351,11 +353,19 @@ export async function materializeConversationFile(params: {
 export async function readConversationFile(filePath: string): Promise<ImportedConversationFile | null> {
   const raw = await fs.readFile(filePath, "utf8");
   const parsed = JSON.parse(raw) as Record<string, any>;
+  const activityCandidates = [
+    parsed.createdAt,
+    parsed.userLastMessagedAt,
+    parsed.assistantLastMessagedAt
+  ].filter((value): value is number => typeof value === "number" && Number.isFinite(value));
 
   return {
     title: typeof parsed.name === "string" && parsed.name.trim().length > 0 ? parsed.name.trim() : "New conversation",
     modelIdentifier:
       typeof parsed.lastUsedModel?.identifier === "string" ? parsed.lastUsedModel.identifier : null,
+    createdAtMs:
+      typeof parsed.createdAt === "number" && Number.isFinite(parsed.createdAt) ? parsed.createdAt : null,
+    lastActivityAtMs: activityCandidates.length > 0 ? Math.max(...activityCandidates) : null,
     messages: parseConversationMessages(parsed.messages)
   };
 }

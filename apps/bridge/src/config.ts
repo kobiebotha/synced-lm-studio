@@ -36,8 +36,8 @@ function numeric(name: string, fallback: number): number {
 export const bridgeConfig = {
   supabaseUrl: required("SUPABASE_URL"),
   supabaseAnonKey: required("SUPABASE_ANON_KEY"),
-  supabaseEmail: required("SUPABASE_EMAIL"),
-  supabasePassword: required("SUPABASE_PASSWORD"),
+  supabaseEmail: process.env.SUPABASE_EMAIL ?? "",
+  supabasePassword: process.env.SUPABASE_PASSWORD ?? "",
   powersyncUrl: required("POWERSYNC_URL"),
   lmStudioBaseUrl: process.env.LM_STUDIO_BASE_URL ?? "http://127.0.0.1:1234",
   lmStudioConversationsDir:
@@ -46,7 +46,9 @@ export const bridgeConfig = {
   bridgeDeviceName: process.env.BRIDGE_DEVICE_NAME ?? "Local LM Studio",
   bridgeMachineKey: process.env.BRIDGE_MACHINE_KEY ?? `lmstudio-${os.hostname()}`,
   bridgeDbFilename: process.env.BRIDGE_DB_FILENAME ?? ".data/bridge.db",
+  bridgeSessionFilename: process.env.BRIDGE_SESSION_FILENAME ?? ".data/bridge-session.json",
   pollIntervalMs: numeric("BRIDGE_POLL_INTERVAL_MS", 2000),
+  heartbeatIntervalMs: numeric("BRIDGE_HEARTBEAT_INTERVAL_MS", 30000),
   modelsRefreshIntervalMs: numeric("BRIDGE_MODELS_REFRESH_INTERVAL_MS", 30000),
   bridgeVersion: process.env.npm_package_version ?? "0.1.0"
 };

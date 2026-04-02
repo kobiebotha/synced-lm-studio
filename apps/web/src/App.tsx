@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState, startTransition } from "react";
 import { PowerSyncContext, usePowerSync, useQuery, useStatus } from "@powersync/react";
 import type { Session } from "@supabase/supabase-js";
+import ReactMarkdown from "react-markdown";
 import {
   APP_TABLES,
   DEFAULT_CONVERSATION_TITLE,
+  DEVICE_PAIRING_STATUS,
   DEVICE_OPERATION_STATUS,
   DEVICE_OPERATION_TYPE,
   parseMessageContent,
@@ -31,30 +33,16 @@ function useSupabaseSession() {
     let mounted = true;
 
     const initialize = async () => {
-      const { data } = await supabase.auth.getSession();
-      if (mounted) {
-        setState({
-          session: data.session,
-          loading: false,
-          error: null
-        });
+      const { data, error } = await supabase.auth.getSession();
+      if (!mounted) {
+        return;
       }
 
-      if (!data.session && webConfig.devEmail && webConfig.devPassword) {
-        const { data: signedIn, error } = await supabase.auth.signInWithPassword({
-          email: webConfig.devEmail,
-          password: webConfig.devPassword
-        });
-        if (!mounted) {
-          return;
-        }
-
-        setState({
-          session: signedIn.session,
-          loading: false,
-          error: error?.message ?? null
-        });
-      }
+      setState({
+        session: data.session,
+        loading: false,
+        error: error?.message ?? null
+      });
     };
 
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -79,16 +67,44 @@ function useSupabaseSession() {
   return state;
 }
 
-function SignInCard() {
+function AuthCard() {
+  const [mode, setMode] = useState<"sign_in" | "sign_up">("sign_in");
   const [email, setEmail] = useState(webConfig.devEmail);
   const [password, setPassword] = useState(webConfig.devPassword);
+  const [confirmPassword, setConfirmPassword] = useState(webConfig.devPassword);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setLoading(true);
     setError(null);
+    setMessage(null);
+
+    if (mode === "sign_up" && password !== confirmPassword) {
+      setLoading(false);
+      setError("Passwords do not match");
+      return;
+    }
+
+    if (mode === "sign_up") {
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email,
+        password
+      });
+      setLoading(false);
+      if (signUpError) {
+        setError(signUpError.message);
+        return;
+      }
+
+      if (!data.session) {
+        setMessage("Sign-up submitted. Confirm the account if email confirmation is enabled.");
+      }
+      return;
+    }
+
     const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (signInError) {
@@ -100,7 +116,7 @@ function SignInCard() {
     <div className="auth-shell">
       <form className="auth-card" onSubmit={submit}>
         <p className="kicker">Remote Terminal</p>
-        <h1>Sign in to the local stack</h1>
+        <h1>{mode === "sign_in" ? "Sign in to the local stack" : "Create a local account"}</h1>
         <p className="lede">
           This web client uses Supabase Auth for both PowerSync credentials and direct PostgREST
           writes.
@@ -117,9 +133,37 @@ function SignInCard() {
             onChange={(event) => setPassword(event.target.value)}
           />
         </label>
+        {mode === "sign_up" ? (
+          <label>
+            <span>Confirm password</span>
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+            />
+          </label>
+        ) : null}
         {error ? <p className="error-banner">{error}</p> : null}
+        {message ? <p className="status-pill">{message}</p> : null}
         <button type="submit" disabled={loading}>
-          {loading ? "Signing in…" : "Sign in"}
+          {loading
+            ? mode === "sign_in"
+              ? "Signing in…"
+              : "Creating account…"
+            : mode === "sign_in"
+              ? "Sign in"
+              : "Sign up"}
+        </button>
+        <button
+          type="button"
+          className="ghost-button"
+          onClick={() => {
+            setMode((current) => (current === "sign_in" ? "sign_up" : "sign_in"));
+            setError(null);
+            setMessage(null);
+          }}
+        >
+          {mode === "sign_in" ? "Need an account? Sign up" : "Already have an account? Sign in"}
         </button>
       </form>
     </div>
@@ -137,12 +181,68 @@ function formatRelativeTimestamp(value: string | null | undefined) {
   }).format(new Date(value));
 }
 
-function Workspace({ userId }: { userId: string }) {
+function nextPairingCode() {
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase();
+}
+
+type ReasoningMode = "off" | "low" | "medium" | "high" | "on";
+
+const REASONING_OPTIONS: Array<{ value: ReasoningMode; label: string }> = [
+  { value: "off", label: "Off" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "on", label: "Extra High" }
+];
+
+function readStoredReasoningMode(): ReasoningMode {
+  if (typeof window === "undefined") {
+    return "on";
+  }
+
+  const raw = window.localStorage.getItem("synced-lm-studio:reasoning-mode");
+  if (raw === "off" || raw === "low" || raw === "medium" || raw === "high" || raw === "on") {
+    return raw;
+  }
+
+  return "on";
+}
+
+function AssistantMessage({
+  contentJson
+}: {
+  contentJson: string | null | undefined;
+}) {
+  const { text, reasoningText } = parseMessageContent(contentJson);
+  const hasReasoning = reasoningText.trim().length > 0;
+  const hasText = text.trim().length > 0;
+
+  return (
+    <div className="assistant-message">
+      {hasReasoning ? (
+        <details className="message-thinking" open>
+          <summary>Thinking</summary>
+          <div className="message-thinking-body">
+            <ReactMarkdown>{reasoningText}</ReactMarkdown>
+          </div>
+        </details>
+      ) : null}
+      {hasText ? (
+        <div className="message-body">
+          <ReactMarkdown>{text}</ReactMarkdown>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Workspace({ userId, userEmail }: { userId: string; userEmail: string | null | undefined }) {
   const db = usePowerSync();
   const status = useStatus();
   const { data: devices } = useQuery(`SELECT * FROM ${APP_TABLES.devices} ORDER BY last_seen_at DESC`);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const activeDeviceId = selectedDeviceId ?? devices[0]?.id ?? null;
+  const activeDevice = devices.find((device) => device.id === activeDeviceId) ?? null;
 
   const { data: conversations } = useQuery(
     `SELECT * FROM ${APP_TABLES.conversations} WHERE (? IS NULL OR target_device_id = ?) ORDER BY COALESCE(last_message_at, created_at) DESC`,
@@ -168,10 +268,16 @@ function Workspace({ userId }: { userId: string }) {
   );
 
   const [prompt, setPrompt] = useState("");
+  const [reasoningMode, setReasoningMode] = useState<ReasoningMode>(readStoredReasoningMode);
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [activeConversationId, conversations]
   );
+  const activeDevicePaired = activeDevice?.pairing_status === DEVICE_PAIRING_STATUS.paired;
+
+  useEffect(() => {
+    window.localStorage.setItem("synced-lm-studio:reasoning-mode", reasoningMode);
+  }, [reasoningMode]);
 
   useEffect(() => {
     if (!selectedDeviceId && devices[0]?.id) {
@@ -185,8 +291,32 @@ function Workspace({ userId }: { userId: string }) {
     }
   }, [conversations, selectedConversationId]);
 
+  const approveDevicePairing = async (deviceId: string) => {
+    const now = new Date().toISOString();
+    await db.execute(
+      `
+        UPDATE ${APP_TABLES.devices}
+        SET pairing_status = ?, pairing_code = ?, paired_at = ?, updated_at = ?
+        WHERE id = ?
+      `,
+      [DEVICE_PAIRING_STATUS.paired, null, now, now, deviceId]
+    );
+  };
+
+  const resetDevicePairing = async (deviceId: string) => {
+    const now = new Date().toISOString();
+    await db.execute(
+      `
+        UPDATE ${APP_TABLES.devices}
+        SET pairing_status = ?, pairing_code = ?, paired_at = ?, updated_at = ?
+        WHERE id = ?
+      `,
+      [DEVICE_PAIRING_STATUS.pending, nextPairingCode(), null, now, deviceId]
+    );
+  };
+
   const sendPrompt = async () => {
-    if (!activeDeviceId || !prompt.trim()) {
+    if (!activeDeviceId || !activeDevicePaired || !prompt.trim()) {
       return;
     }
 
@@ -253,6 +383,7 @@ function Workspace({ userId }: { userId: string }) {
           DEVICE_OPERATION_TYPE.sendMessage,
           JSON.stringify({
             user_message_id: messageId,
+            reasoning: reasoningMode,
             materialize_sidebar: true
           }),
           DEVICE_OPERATION_STATUS.pending,
@@ -309,8 +440,17 @@ function Workspace({ userId }: { userId: string }) {
           <p className="status-pill">
             {status.connected ? "PowerSync connected" : "PowerSync reconnecting"}
           </p>
+          <p className="lede">Signed in as {userEmail ?? userId}</p>
           <button onClick={queueRefreshModels} disabled={!activeDeviceId}>
             Refresh models
+          </button>
+          <button
+            className="ghost-button"
+            onClick={() => {
+              void supabase.auth.signOut();
+            }}
+          >
+            Sign out
           </button>
           <div className="device-list">
             {devices.map((device) => (
@@ -320,10 +460,24 @@ function Workspace({ userId }: { userId: string }) {
                 onClick={() => setSelectedDeviceId(device.id)}
               >
                 <span>{device.display_name}</span>
-                <small>{device.status}</small>
+                <small>
+                  {device.status} · {device.pairing_status ?? DEVICE_PAIRING_STATUS.pending}
+                </small>
               </button>
             ))}
           </div>
+          {activeDevice && activeDevice.pairing_status !== DEVICE_PAIRING_STATUS.paired ? (
+            <div className="pairing-card">
+              <p className="kicker">Pairing</p>
+              <h3>{activeDevice.display_name}</h3>
+              <p>Approve this bridge before it can execute queued operations.</p>
+              <p className="pairing-code">{activeDevice.pairing_code ?? "pending"}</p>
+              <button onClick={() => approveDevicePairing(activeDevice.id)}>Pair device</button>
+              <button className="ghost-button" onClick={() => resetDevicePairing(activeDevice.id)}>
+                Reset code
+              </button>
+            </div>
+          ) : null}
         </div>
 
         <div className="panel">
@@ -365,25 +519,55 @@ function Workspace({ userId }: { userId: string }) {
 
         <section className="chat-panel">
           <div className="messages">
-            {messages.map((message) => (
-              <article
-                className={message.role === "assistant" ? "message assistant" : "message user"}
-                key={message.id}
-              >
-                <p className="message-role">{message.role}</p>
-                <p>{parseMessageContent(message.content_json).text}</p>
-              </article>
-            ))}
+            {messages.map((message) => {
+              const { text } = parseMessageContent(message.content_json);
+
+              return (
+                <article
+                  className={message.role === "assistant" ? "message assistant" : "message user"}
+                  key={message.id}
+                >
+                  <p className="message-role">{message.role}</p>
+                  {message.role === "assistant" ? (
+                    <AssistantMessage contentJson={message.content_json} />
+                  ) : (
+                    <p className="message-body message-body-plain">{text}</p>
+                  )}
+                </article>
+              );
+            })}
           </div>
           <div className="composer">
-            <textarea
-              placeholder="Send a prompt to the selected LM Studio bridge…"
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-            />
-            <button onClick={sendPrompt} disabled={!activeDeviceId || !prompt.trim()}>
-              Send
-            </button>
+            <div className="composer-shell">
+              <textarea
+                placeholder="Send a prompt to the selected LM Studio bridge…"
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+              />
+              <div className="composer-footer">
+                <div className="composer-actions">
+                  <label className="composer-select">
+                    <span>Think</span>
+                    <select
+                      value={reasoningMode}
+                      onChange={(event) => setReasoningMode(event.target.value as ReasoningMode)}
+                    >
+                      {REASONING_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <button
+                  onClick={sendPrompt}
+                  disabled={!activeDeviceId || !activeDevicePaired || !prompt.trim()}
+                >
+                  Send
+                </button>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -448,7 +632,7 @@ export default function App() {
   }
 
   if (!auth.session) {
-    return <SignInCard />;
+    return <AuthCard />;
   }
 
   if (databaseError) {
@@ -461,7 +645,7 @@ export default function App() {
 
   return (
     <PowerSyncContext.Provider value={database}>
-      <Workspace userId={auth.session.user.id} />
+      <Workspace userId={auth.session.user.id} userEmail={auth.session.user.email} />
     </PowerSyncContext.Provider>
   );
 }
