@@ -1,16 +1,18 @@
-import { useEffect, useMemo, useState, startTransition } from "react";
+import { useEffect, useMemo, useRef, useState, startTransition } from "react";
 import { PowerSyncContext, usePowerSync, useQuery, useStatus } from "@powersync/react";
 import type { Session } from "@supabase/supabase-js";
 import ReactMarkdown from "react-markdown";
 import {
   APP_TABLES,
+  OPERATION_EVENT_TYPE,
   DEFAULT_CONVERSATION_TITLE,
   DEVICE_PAIRING_STATUS,
   DEVICE_OPERATION_STATUS,
   DEVICE_OPERATION_TYPE,
   parseMessageContent,
   serializeMessageContent,
-  truncateTitle
+  truncateTitle,
+  type AppDatabase
 } from "@synced-lm-studio/shared";
 import { webConfig } from "./config";
 import { createWebDatabase } from "./powersync";
@@ -20,6 +22,25 @@ type AuthState = {
   session: Session | null;
   loading: boolean;
   error: string | null;
+};
+
+type MessageRow = AppDatabase["messages"];
+type DeviceOperationRow = AppDatabase["device_operations"];
+type OperationEventJoinRow = AppDatabase["operation_events"] & {
+  conversation_id: string | null;
+  operation_type: string | null;
+  operation_status: string | null;
+  operation_created_at: string | null;
+};
+
+type OperationBenchmark = {
+  operationId: string;
+  status: string | null | undefined;
+  submittedAt: string | null;
+  bridgeMessageSeenAt: string | null;
+  runningAt: string | null;
+  bridgeResponseWrittenAt: string | null;
+  renderedAt: string | null;
 };
 
 function useSupabaseSession() {
@@ -208,6 +229,100 @@ function readStoredReasoningMode(): ReasoningMode {
   return "on";
 }
 
+function ensureJson<T>(raw: string | null | undefined, fallback: T): T {
+  if (!raw) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function diffMs(start: string | null | undefined, end: string | null | undefined) {
+  if (!start || !end) {
+    return null;
+  }
+
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
+    return null;
+  }
+
+  return Math.max(0, endMs - startMs);
+}
+
+function formatDuration(durationMs: number | null) {
+  if (durationMs == null) {
+    return "waiting";
+  }
+
+  if (durationMs < 1_000) {
+    return `${durationMs} ms`;
+  }
+
+  return `${(durationMs / 1_000).toFixed(durationMs >= 10_000 ? 1 : 2)} s`;
+}
+
+function findOperationEvent(
+  events: ReadonlyArray<OperationEventJoinRow>,
+  operationId: string,
+  eventType: string
+) {
+  return events.find(
+    (event) => event.operation_id === operationId && event.event_type === eventType
+  );
+}
+
+function readAssistantMessageId(
+  events: ReadonlyArray<OperationEventJoinRow>,
+  operationId: string
+) {
+  const responseWrittenEvent = findOperationEvent(
+    events,
+    operationId,
+    OPERATION_EVENT_TYPE.benchmarkBridgeResponseWritten
+  );
+  const completedEvent = findOperationEvent(events, operationId, OPERATION_EVENT_TYPE.completed);
+
+  for (const event of [responseWrittenEvent, completedEvent]) {
+    const payload = ensureJson<{ assistant_message_id?: string }>(event?.payload_json, {});
+    if (payload.assistant_message_id) {
+      return payload.assistant_message_id;
+    }
+  }
+
+  return null;
+}
+
+function buildOperationBenchmarks(
+  operations: ReadonlyArray<DeviceOperationRow>,
+  events: ReadonlyArray<OperationEventJoinRow>
+) {
+  return operations
+    .filter((operation) => operation.type === DEVICE_OPERATION_TYPE.sendMessage)
+    .map((operation): OperationBenchmark => ({
+      operationId: operation.id,
+      status: operation.status,
+      submittedAt:
+        findOperationEvent(events, operation.id, OPERATION_EVENT_TYPE.benchmarkWebSubmit)
+          ?.created_at ?? operation.created_at ?? null,
+      bridgeMessageSeenAt:
+        findOperationEvent(events, operation.id, OPERATION_EVENT_TYPE.benchmarkBridgeMessageSeen)
+          ?.created_at ?? null,
+      runningAt: findOperationEvent(events, operation.id, OPERATION_EVENT_TYPE.running)?.created_at ?? null,
+      bridgeResponseWrittenAt:
+        findOperationEvent(events, operation.id, OPERATION_EVENT_TYPE.benchmarkBridgeResponseWritten)
+          ?.created_at ?? null,
+      renderedAt:
+        findOperationEvent(events, operation.id, OPERATION_EVENT_TYPE.benchmarkWebResponseRendered)
+          ?.created_at ?? null
+    }));
+}
+
 function AssistantMessage({
   contentJson
 }: {
@@ -236,6 +351,59 @@ function AssistantMessage({
   );
 }
 
+function OperationBenchmarkCard({ benchmark }: { benchmark: OperationBenchmark }) {
+  const syncToBridgeMs = diffMs(benchmark.submittedAt, benchmark.bridgeMessageSeenAt);
+  const bridgeToResponseSqliteMs = diffMs(
+    benchmark.bridgeMessageSeenAt,
+    benchmark.bridgeResponseWrittenAt
+  );
+  const responseToRenderMs = diffMs(benchmark.bridgeResponseWrittenAt, benchmark.renderedAt);
+  const totalRoundTripMs = diffMs(benchmark.submittedAt, benchmark.renderedAt);
+  const bridgePickupMs = diffMs(benchmark.bridgeMessageSeenAt, benchmark.runningAt);
+  const modelRuntimeMs = diffMs(benchmark.runningAt, benchmark.bridgeResponseWrittenAt);
+  const phaseLabel =
+    benchmark.renderedAt != null
+      ? "visible in UI"
+      : benchmark.bridgeResponseWrittenAt != null
+        ? "syncing back to web"
+        : benchmark.bridgeMessageSeenAt != null
+          ? "inferencing"
+          : "syncing to bridge";
+
+  return (
+    <article className="benchmark-card">
+      <div className="benchmark-header">
+        <span>Send message</span>
+        <small>
+          {benchmark.status ?? "unknown"} · {phaseLabel}
+        </small>
+      </div>
+      <dl className="benchmark-metrics">
+        <div>
+          <dt>Web submit → bridge SQLite</dt>
+          <dd>{formatDuration(syncToBridgeMs)}</dd>
+        </div>
+        <div>
+          <dt>Bridge SQLite → response SQLite</dt>
+          <dd>{formatDuration(bridgeToResponseSqliteMs)}</dd>
+        </div>
+        <div>
+          <dt>Response SQLite → web UI</dt>
+          <dd>{formatDuration(responseToRenderMs)}</dd>
+        </div>
+        <div>
+          <dt>Total round trip</dt>
+          <dd>{formatDuration(totalRoundTripMs)}</dd>
+        </div>
+      </dl>
+      <p className="benchmark-detail">
+        Bridge pickup after receipt: {formatDuration(bridgePickupMs)}. LM response write after
+        pickup: {formatDuration(modelRuntimeMs)}.
+      </p>
+    </article>
+  );
+}
+
 function Workspace({ userId, userEmail }: { userId: string; userEmail: string | null | undefined }) {
   const db = usePowerSync();
   const status = useStatus();
@@ -252,7 +420,7 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const activeConversationId = selectedConversationId ?? conversations[0]?.id ?? null;
 
-  const { data: messages } = useQuery(
+  const { data: messages } = useQuery<MessageRow>(
     `SELECT * FROM ${APP_TABLES.messages} WHERE (? IS NULL OR conversation_id = ?) ORDER BY created_at ASC`,
     [activeConversationId, activeConversationId]
   );
@@ -262,18 +430,39 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
     [activeDeviceId, activeDeviceId]
   );
 
-  const { data: operations } = useQuery(
+  const { data: operations } = useQuery<DeviceOperationRow>(
     `SELECT * FROM ${APP_TABLES.deviceOperations} WHERE (? IS NULL OR conversation_id = ?) ORDER BY created_at DESC LIMIT 20`,
+    [activeConversationId, activeConversationId]
+  );
+  const { data: operationEvents } = useQuery<OperationEventJoinRow>(
+    `
+      SELECT
+        e.*,
+        o.conversation_id,
+        o.type AS operation_type,
+        o.status AS operation_status,
+        o.created_at AS operation_created_at
+      FROM ${APP_TABLES.operationEvents} e
+      JOIN ${APP_TABLES.deviceOperations} o ON o.id = e.operation_id
+      WHERE (? IS NULL OR o.conversation_id = ?)
+      ORDER BY o.created_at DESC, e.created_at ASC
+      LIMIT 200
+    `,
     [activeConversationId, activeConversationId]
   );
 
   const [prompt, setPrompt] = useState("");
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>(readStoredReasoningMode);
+  const renderMeasuredOperations = useRef<Set<string>>(new Set());
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [activeConversationId, conversations]
   );
   const activeDevicePaired = activeDevice?.pairing_status === DEVICE_PAIRING_STATUS.paired;
+  const benchmarks = useMemo(
+    () => buildOperationBenchmarks(operations, operationEvents),
+    [operationEvents, operations]
+  );
 
   useEffect(() => {
     window.localStorage.setItem("synced-lm-studio:reasoning-mode", reasoningMode);
@@ -290,6 +479,78 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
       setSelectedConversationId(conversations[0].id);
     }
   }, [conversations, selectedConversationId]);
+
+  useEffect(() => {
+    const visibleMessageIds = new Set(messages.map((message) => message.id));
+    const readyToMeasure = operations
+      .filter((operation) => operation.type === DEVICE_OPERATION_TYPE.sendMessage)
+      .map((operation) => {
+        if (renderMeasuredOperations.current.has(operation.id)) {
+          return null;
+        }
+
+        const existingRenderEvent = findOperationEvent(
+          operationEvents,
+          operation.id,
+          OPERATION_EVENT_TYPE.benchmarkWebResponseRendered
+        );
+        if (existingRenderEvent) {
+          renderMeasuredOperations.current.add(operation.id);
+          return null;
+        }
+
+        const assistantMessageId = readAssistantMessageId(operationEvents, operation.id);
+        if (!assistantMessageId || !visibleMessageIds.has(assistantMessageId)) {
+          return null;
+        }
+
+        return {
+          operationId: operation.id,
+          deviceId: operation.device_id,
+          assistantMessageId
+        };
+      })
+      .filter((entry) => entry != null);
+
+    if (readyToMeasure.length === 0) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      void Promise.all(
+        readyToMeasure.map(async (entry) => {
+          renderMeasuredOperations.current.add(entry.operationId);
+
+          try {
+            await db.execute(
+              `
+                INSERT INTO ${APP_TABLES.operationEvents}
+                  (id, operation_id, device_id, event_type, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+              `,
+              [
+                crypto.randomUUID(),
+                entry.operationId,
+                entry.deviceId,
+                OPERATION_EVENT_TYPE.benchmarkWebResponseRendered,
+                JSON.stringify({
+                  assistant_message_id: entry.assistantMessageId
+                }),
+                new Date().toISOString()
+              ]
+            );
+          } catch (error) {
+            renderMeasuredOperations.current.delete(entry.operationId);
+            console.error("Failed to record web render benchmark", error);
+          }
+        })
+      );
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [db, messages, operationEvents, operations]);
 
   const approveDevicePairing = async (deviceId: string) => {
     const now = new Date().toISOString();
@@ -391,6 +652,24 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
           now,
           null,
           null,
+          now
+        ]
+      );
+
+      await tx.execute(
+        `
+          INSERT INTO ${APP_TABLES.operationEvents}
+            (id, operation_id, device_id, event_type, payload_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `,
+        [
+          crypto.randomUUID(),
+          operationId,
+          activeDeviceId,
+          OPERATION_EVENT_TYPE.benchmarkWebSubmit,
+          JSON.stringify({
+            user_message_id: messageId
+          }),
           now
         ]
       );
@@ -574,11 +853,19 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
         <section className="operations-panel">
           <header className="panel-header">
             <div>
-              <p className="kicker">Operations</p>
-              <h2>Bridge activity</h2>
+              <p className="kicker">Round Trip</p>
+              <h2>Latency breakdown</h2>
             </div>
           </header>
           <div className="operation-list">
+            {benchmarks.length === 0 ? (
+              <p className="lede">Send a message to capture web, bridge, and render timings.</p>
+            ) : null}
+            {benchmarks.map((benchmark) => (
+              <OperationBenchmarkCard key={benchmark.operationId} benchmark={benchmark} />
+            ))}
+          </div>
+          <div className="operation-list operation-status-list">
             {operations.map((operation) => (
               <div className="operation-row" key={operation.id}>
                 <span>{operation.type}</span>

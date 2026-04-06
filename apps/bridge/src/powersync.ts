@@ -1,7 +1,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { PowerSyncDatabase, SyncStatus, UpdateType } from "@powersync/node";
+import { FetchStrategy, PowerSyncDatabase, SyncStatus, UpdateType } from "@powersync/node";
 import type {
   AbstractPowerSyncDatabase,
   CrudEntry,
@@ -296,7 +296,9 @@ export async function createBridgeDatabase() {
 
   const connector = new BridgeConnector(supabase);
   console.log("[bridge] Connecting to PowerSync");
-  await db.connect(connector);
+  await db.connect(connector, {
+    fetchStrategy: FetchStrategy.Sequential
+  });
   console.log("[bridge] Waiting for first PowerSync sync");
   await db.waitForFirstSync();
   console.log("[bridge] First PowerSync sync complete");

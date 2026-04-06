@@ -23,6 +23,16 @@ export const DEVICE_OPERATION_STATUS = {
   failed: "failed"
 } as const;
 
+export const OPERATION_EVENT_TYPE = {
+  running: "running",
+  completed: "completed",
+  failed: "failed",
+  benchmarkWebSubmit: "benchmark:web_submit",
+  benchmarkBridgeMessageSeen: "benchmark:bridge_message_seen",
+  benchmarkBridgeResponseWritten: "benchmark:bridge_response_written",
+  benchmarkWebResponseRendered: "benchmark:web_response_rendered"
+} as const;
+
 export const DEVICE_STATUS = {
   online: "online",
   offline: "offline"

@@ -2,10 +2,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import chokidar, { type FSWatcher } from "chokidar";
-import type { PowerSyncDatabase } from "@powersync/node";
+import type { PowerSyncDatabase, WatchedQuery } from "@powersync/node";
 import {
   APP_TABLES,
   DEFAULT_CONVERSATION_TITLE,
+  OPERATION_EVENT_TYPE,
   DEVICE_PAIRING_STATUS,
   DEVICE_OPERATION_STATUS,
   DEVICE_OPERATION_TYPE,
@@ -92,6 +93,11 @@ export class BridgeService {
   private conversationSyncRequested = false;
   private readonly conversationDeleteTimers = new Map<string, NodeJS.Timeout>();
   private isTicking = false;
+  private tickQueued = false;
+  private pendingOperationWatch: WatchedQuery<ReadonlyArray<Readonly<DeviceOperationRow>>> | null =
+    null;
+  private pendingOperationWatchDispose: (() => void) | null = null;
+  private pendingOperationWatchChain: Promise<void> = Promise.resolve();
   private readonly conversationFileStates = new Map<string, ConversationFileState>();
   private conversationDirectoryAvailable: boolean | null = null;
   private announcedPairingStateKey: string | null = null;
@@ -114,10 +120,11 @@ export class BridgeService {
         ? "[bridge] Initial model refresh complete"
         : "[bridge] Initial model refresh deferred until the LM Studio API is reachable"
     );
+    await this.startPendingOperationWatch();
     await this.startConversationWatcher();
     await this.tick();
     this.timer = setInterval(() => {
-      void this.tick();
+      this.requestTick();
     }, bridgeConfig.pollIntervalMs);
   }
 
@@ -134,6 +141,14 @@ export class BridgeService {
     if (this.conversationWatcher) {
       await this.conversationWatcher.close();
       this.conversationWatcher = null;
+    }
+    if (this.pendingOperationWatchDispose) {
+      this.pendingOperationWatchDispose();
+      this.pendingOperationWatchDispose = null;
+    }
+    if (this.pendingOperationWatch) {
+      await this.pendingOperationWatch.close();
+      this.pendingOperationWatch = null;
     }
     for (const timer of this.conversationDeleteTimers.values()) {
       clearTimeout(timer);
@@ -154,8 +169,132 @@ export class BridgeService {
     );
   }
 
+  private async startPendingOperationWatch() {
+    if (this.pendingOperationWatch || !this.deviceId) {
+      return;
+    }
+
+    const watchedQuery = this.db
+      .query<DeviceOperationRow>({
+        sql: `
+          SELECT *
+          FROM ${APP_TABLES.deviceOperations}
+          WHERE device_id = ?
+            AND type = ?
+            AND status IN (?, ?)
+          ORDER BY created_at ASC
+          LIMIT 20
+        `,
+        parameters: [
+          this.deviceId,
+          DEVICE_OPERATION_TYPE.sendMessage,
+          DEVICE_OPERATION_STATUS.pending,
+          DEVICE_OPERATION_STATUS.running
+        ]
+      })
+      .watch({
+        triggerOnTables: [APP_TABLES.deviceOperations, APP_TABLES.messages],
+        reportFetching: false,
+        throttleMs: 10
+      });
+
+    this.pendingOperationWatch = watchedQuery;
+    this.pendingOperationWatchDispose = watchedQuery.registerListener({
+      onData: (operations) => {
+        this.pendingOperationWatchChain = this.pendingOperationWatchChain
+          .then(async () => {
+            await this.recordBridgeMessageSeenEvents(operations);
+            if (operations.length > 0) {
+              this.requestTick();
+            }
+          })
+          .catch((error) => {
+            console.error("[bridge] Failed to record bridge message receipt benchmark", {
+              error: error instanceof Error ? error.message : String(error)
+            });
+          });
+      },
+      onError: (error) => {
+        console.error("[bridge] Pending operation watch failed", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      },
+      closed: () => {
+        this.pendingOperationWatch = null;
+        this.pendingOperationWatchDispose = null;
+      }
+    });
+
+    await this.recordBridgeMessageSeenEvents(watchedQuery.state.data);
+    if (watchedQuery.state.data.length > 0) {
+      this.requestTick();
+    }
+  }
+
+  private requestTick() {
+    if (this.isTicking) {
+      this.tickQueued = true;
+      return;
+    }
+
+    void this.tick();
+  }
+
+  private async recordBridgeMessageSeenEvents(
+    operations: ReadonlyArray<Readonly<DeviceOperationRow>>
+  ) {
+    if (!this.deviceId) {
+      return;
+    }
+
+    for (const operation of operations) {
+      const payload = ensureJson<SendMessagePayload>(operation.payload_json, {});
+      if (!payload.user_message_id) {
+        continue;
+      }
+
+      const [existingEvent, userMessage] = await Promise.all([
+        this.db.getOptional<{ id: string }>(
+          `
+            SELECT id
+            FROM ${APP_TABLES.operationEvents}
+            WHERE operation_id = ?
+              AND event_type = ?
+            LIMIT 1
+          `,
+          [operation.id, OPERATION_EVENT_TYPE.benchmarkBridgeMessageSeen]
+        ),
+        this.requireMessage(payload.user_message_id)
+      ]);
+
+      if (existingEvent || !userMessage) {
+        continue;
+      }
+
+      await this.db.execute(
+        `
+          INSERT INTO ${APP_TABLES.operationEvents}
+            (id, operation_id, device_id, event_type, payload_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `,
+        [
+          randomUUID(),
+          operation.id,
+          this.deviceId,
+          OPERATION_EVENT_TYPE.benchmarkBridgeMessageSeen,
+          JSON.stringify({
+            user_message_id: userMessage.id,
+            observed_operation_status: operation.status ?? null
+          }),
+          isoNow()
+        ]
+      );
+    }
+  }
+
   private async tick() {
     if (this.isTicking) {
+      this.tickQueued = true;
       return;
     }
 
@@ -180,6 +319,10 @@ export class BridgeService {
       }
     } finally {
       this.isTicking = false;
+      if (this.tickQueued) {
+        this.tickQueued = false;
+        this.requestTick();
+      }
     }
   }
 
@@ -366,7 +509,7 @@ export class BridgeService {
     this.conversationSyncTimer = setTimeout(() => {
       this.conversationSyncTimer = null;
       this.conversationSyncDueAt = 0;
-      void this.tick();
+      this.requestTick();
     }, Math.max(0, nextDueAt - Date.now()));
   }
 
@@ -1319,7 +1462,27 @@ export class BridgeService {
           randomUUID(),
           operation.id,
           this.deviceId,
-          "completed",
+          OPERATION_EVENT_TYPE.benchmarkBridgeResponseWritten,
+          JSON.stringify({
+            assistant_message_id: assistantMessageId,
+            response_id: lmResult.responseId,
+            model_identifier: modelIdentifier
+          }),
+          completedAt
+        ]
+      );
+
+      await tx.execute(
+        `
+          INSERT INTO ${APP_TABLES.operationEvents}
+            (id, operation_id, device_id, event_type, payload_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `,
+        [
+          randomUUID(),
+          operation.id,
+          this.deviceId,
+          OPERATION_EVENT_TYPE.completed,
           JSON.stringify({
             assistant_message_id: assistantMessageId,
             response_id: lmResult.responseId,
@@ -1349,7 +1512,7 @@ export class BridgeService {
             (id, operation_id, device_id, event_type, payload_json, created_at)
           VALUES (?, ?, ?, ?, ?, ?)
         `,
-        [randomUUID(), operationId, this.deviceId, "running", JSON.stringify({}), now]
+        [randomUUID(), operationId, this.deviceId, OPERATION_EVENT_TYPE.running, JSON.stringify({}), now]
       );
     });
   }
@@ -1372,7 +1535,14 @@ export class BridgeService {
             (id, operation_id, device_id, event_type, payload_json, created_at)
           VALUES (?, ?, ?, ?, ?, ?)
         `,
-        [randomUUID(), operationId, this.deviceId, "completed", JSON.stringify(payload), now]
+        [
+          randomUUID(),
+          operationId,
+          this.deviceId,
+          OPERATION_EVENT_TYPE.completed,
+          JSON.stringify(payload),
+          now
+        ]
       );
     });
   }
@@ -1399,7 +1569,7 @@ export class BridgeService {
           randomUUID(),
           operationId,
           this.deviceId,
-          "failed",
+          OPERATION_EVENT_TYPE.failed,
           JSON.stringify({ error: errorText }),
           now
         ]
