@@ -8,7 +8,8 @@ import type {
   AbstractPowerSyncDatabase,
   CrudEntry,
   PowerSyncBackendConnector,
-  PowerSyncCredentials
+  PowerSyncCredentials,
+  WebPowerSyncFlags
 } from "@powersync/web";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -44,6 +45,7 @@ async function recordUploadError(
 type CreateWebDatabaseOptions = {
   allowAnonymous?: boolean;
   dbFilename?: string;
+  flags?: WebPowerSyncFlags;
   readOnly?: boolean;
 };
 
@@ -143,8 +145,10 @@ export async function createWebDatabase(
 ) {
   const database = new PowerSyncDatabase({
     schema: AppSchema,
+    flags: options.flags,
     database: new WASQLiteOpenFactory({
       dbFilename: options.dbFilename ?? "synced-lm-studio.db",
+      flags: options.flags,
       vfs: WASQLiteVFS.IDBBatchAtomicVFS
     })
   });

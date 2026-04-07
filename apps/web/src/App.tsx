@@ -99,8 +99,8 @@ function createShareLink(shareToken: string) {
 }
 
 function shareDatabaseFilename(shareToken: string) {
-  const safeToken = shareToken.replace(/[^a-z0-9_-]/gi, "").slice(0, 48) || "shared";
-  return `synced-lm-studio-share-${safeToken}.db`;
+  const safeToken = shareToken.replace(/[^a-z0-9_-]/gi, "").slice(0, 8) || "shared";
+  return `synced-lm-studio-share-v2-${safeToken}.db`;
 }
 
 function useSupabaseSession(supabaseClient: SupabaseClient, allowAnonymous = false) {
@@ -1248,48 +1248,91 @@ export default function App() {
   const auth = useSupabaseSession(supabaseClient, mode.kind === "share");
   const [database, setDatabase] = useState<Awaited<ReturnType<typeof createWebDatabase>> | null>(null);
   const [databaseError, setDatabaseError] = useState<string | null>(null);
+  const databaseRef = useRef<Awaited<ReturnType<typeof createWebDatabase>> | null>(null);
+  const initSequenceRef = useRef(0);
+  const databaseKey =
+    auth.session == null
+      ? null
+      : mode.kind === "share"
+        ? `share:${mode.shareToken}`
+        : `workspace:${auth.session.user.id}`;
+
+  const closeDatabase = async (db: Awaited<ReturnType<typeof createWebDatabase>> | null) => {
+    if (!db) {
+      return;
+    }
+
+    try {
+      await db.close({ disconnect: true });
+    } catch (error) {
+      console.warn("Failed to close PowerSync database cleanly", error);
+    }
+  };
 
   useEffect(() => {
-    let mounted = true;
+    let cancelled = false;
+    const initSequence = ++initSequenceRef.current;
 
-    if (!auth.session) {
+    const replaceDatabase = async () => {
+      const previousDatabase = databaseRef.current;
+      databaseRef.current = null;
       setDatabase(null);
-      setDatabaseError(null);
-      return;
-    }
 
-    if (!webConfig.powersyncUrl) {
-      setDatabase(null);
-      setDatabaseError(null);
-      return;
-    }
-
-    void createWebDatabase(supabaseClient, webConfig.powersyncUrl, {
-      allowAnonymous: mode.kind === "share",
-      dbFilename:
-        mode.kind === "share" ? shareDatabaseFilename(mode.shareToken) : "synced-lm-studio.db",
-      readOnly: mode.kind === "share"
-    })
-      .then((db) => {
-        if (!mounted) {
-          return;
-        }
-
-        setDatabase(db);
+      if (!databaseKey || !webConfig.powersyncUrl) {
         setDatabaseError(null);
-      })
-      .catch((error) => {
-        if (!mounted) {
-          return;
-        }
+        await closeDatabase(previousDatabase);
+        return;
+      }
 
-        setDatabaseError(error instanceof Error ? error.message : "Failed to initialize PowerSync");
+      setDatabaseError(null);
+      await closeDatabase(previousDatabase);
+
+      const nextDatabase = await createWebDatabase(supabaseClient, webConfig.powersyncUrl, {
+        allowAnonymous: mode.kind === "share",
+        dbFilename:
+          mode.kind === "share" ? shareDatabaseFilename(mode.shareToken) : "synced-lm-studio.db",
+        flags:
+          mode.kind === "share"
+            ? {
+                enableMultiTabs: false,
+                useWebWorker: false
+              }
+            : undefined,
+        readOnly: mode.kind === "share"
       });
 
-    return () => {
-      mounted = false;
+      if (cancelled || initSequence !== initSequenceRef.current) {
+        await closeDatabase(nextDatabase);
+        return;
+      }
+
+      databaseRef.current = nextDatabase;
+      setDatabase(nextDatabase);
+      setDatabaseError(null);
     };
-  }, [auth.session, mode, supabaseClient]);
+
+    void replaceDatabase().catch(async (error) => {
+      if (cancelled || initSequence !== initSequenceRef.current) {
+        return;
+      }
+
+      databaseRef.current = null;
+      setDatabase(null);
+      setDatabaseError(error instanceof Error ? error.message : "Failed to initialize PowerSync");
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [databaseKey, mode, supabaseClient]);
+
+  useEffect(() => {
+    return () => {
+      const activeDatabase = databaseRef.current;
+      databaseRef.current = null;
+      void closeDatabase(activeDatabase);
+    };
+  }, []);
 
   if (auth.loading) {
     return (
