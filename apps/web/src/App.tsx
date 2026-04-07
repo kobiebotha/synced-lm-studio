@@ -1272,25 +1272,6 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
             </div>
             <div className="panel-actions">
               {selectedConversation?.share_token ? <p className="status-pill">Shared</p> : null}
-              <button
-                className="ghost-button"
-                onClick={() => {
-                  void copyConversationShareLink();
-                }}
-                disabled={!selectedConversation}
-              >
-                {selectedConversation?.share_token ? "Copy share link" : "Share chat"}
-              </button>
-              {selectedConversation?.share_token ? (
-                <button
-                  className="ghost-button"
-                  onClick={() => {
-                    void revokeConversationShareLink();
-                  }}
-                >
-                  Revoke link
-                </button>
-              ) : null}
             </div>
           </header>
           {shareFeedback ? (
@@ -1365,12 +1346,33 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
                     </select>
                   </label>
                 </div>
-                <button
-                  onClick={sendPrompt}
-                  disabled={!activeDeviceId || !activeDevicePaired || !prompt.trim()}
-                >
-                  Send
-                </button>
+                <div className="composer-end-actions">
+                  <button
+                    className="ghost-button"
+                    onClick={() => {
+                      void copyConversationShareLink();
+                    }}
+                    disabled={!selectedConversation}
+                  >
+                    {selectedConversation?.share_token ? "Copy share link" : "Share chat"}
+                  </button>
+                  {selectedConversation?.share_token ? (
+                    <button
+                      className="ghost-button"
+                      onClick={() => {
+                        void revokeConversationShareLink();
+                      }}
+                    >
+                      Revoke link
+                    </button>
+                  ) : null}
+                  <button
+                    onClick={sendPrompt}
+                    disabled={!activeDeviceId || !activeDevicePaired || !prompt.trim()}
+                  >
+                    Send
+                  </button>
+                </div>
               </div>
             </div>
           </div>
