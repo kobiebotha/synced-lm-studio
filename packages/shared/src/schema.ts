@@ -52,6 +52,8 @@ export const conversations = new Table(
     title: column.text,
     status: column.text,
     metadata_json: column.text,
+    share_token: column.text,
+    shared_at: column.text,
     created_at: column.text,
     updated_at: column.text,
     last_message_at: column.text
@@ -60,6 +62,7 @@ export const conversations = new Table(
     indexes: {
       owner: ["owner_user_id"],
       device: ["target_device_id"],
+      shareToken: ["share_token"],
       updated: ["updated_at"]
     }
   }

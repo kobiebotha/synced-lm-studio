@@ -41,10 +41,31 @@ async function recordUploadError(
   );
 }
 
-async function ensureSession(supabase: SupabaseClient) {
-  const { data } = await supabase.auth.getSession();
+type CreateWebDatabaseOptions = {
+  allowAnonymous?: boolean;
+  dbFilename?: string;
+  readOnly?: boolean;
+};
+
+async function ensureSession(supabase: SupabaseClient, allowAnonymous = false) {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) {
+    throw error;
+  }
+
   if (data.session) {
     return data.session;
+  }
+
+  if (allowAnonymous) {
+    const { data: anonymousData, error: anonymousError } = await supabase.auth.signInAnonymously();
+    if (anonymousError) {
+      throw anonymousError;
+    }
+
+    if (anonymousData.session) {
+      return anonymousData.session;
+    }
   }
 
   throw new Error("No active Supabase session");
@@ -53,11 +74,15 @@ async function ensureSession(supabase: SupabaseClient) {
 class WebConnector implements PowerSyncBackendConnector {
   constructor(
     private readonly supabase: SupabaseClient,
-    private readonly powersyncUrl: string
+    private readonly powersyncUrl: string,
+    private readonly options: {
+      allowAnonymous?: boolean;
+      readOnly?: boolean;
+    } = {}
   ) {}
 
   async fetchCredentials(): Promise<PowerSyncCredentials> {
-    const session = await ensureSession(this.supabase);
+    const session = await ensureSession(this.supabase, this.options.allowAnonymous);
     return {
       endpoint: this.powersyncUrl,
       token: session.access_token,
@@ -66,6 +91,10 @@ class WebConnector implements PowerSyncBackendConnector {
   }
 
   async uploadData(database: AbstractPowerSyncDatabase): Promise<void> {
+    if (this.options.readOnly) {
+      return;
+    }
+
     const transaction = await database.getNextCrudTransaction();
     if (!transaction) {
       return;
@@ -107,16 +136,25 @@ class WebConnector implements PowerSyncBackendConnector {
   }
 }
 
-export async function createWebDatabase(supabase: SupabaseClient, powersyncUrl: string) {
+export async function createWebDatabase(
+  supabase: SupabaseClient,
+  powersyncUrl: string,
+  options: CreateWebDatabaseOptions = {}
+) {
   const database = new PowerSyncDatabase({
     schema: AppSchema,
     database: new WASQLiteOpenFactory({
-      dbFilename: "synced-lm-studio.db",
+      dbFilename: options.dbFilename ?? "synced-lm-studio.db",
       vfs: WASQLiteVFS.OPFSCoopSyncVFS
     })
   });
 
-  await database.connect(new WebConnector(supabase, powersyncUrl));
+  await database.connect(
+    new WebConnector(supabase, powersyncUrl, {
+      allowAnonymous: options.allowAnonymous,
+      readOnly: options.readOnly
+    })
+  );
 
   return database;
 }

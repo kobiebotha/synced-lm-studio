@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState, startTransition } from "react";
-import { PowerSyncContext, usePowerSync, useQuery, useStatus } from "@powersync/react";
-import type { Session } from "@supabase/supabase-js";
+import {
+  PowerSyncContext,
+  usePowerSync,
+  useQuery,
+  useStatus,
+  useSyncStream
+} from "@powersync/react";
+import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import ReactMarkdown from "react-markdown";
 import {
   APP_TABLES,
@@ -16,7 +22,7 @@ import {
 } from "@synced-lm-studio/shared";
 import { webConfig } from "./config";
 import { createWebDatabase } from "./powersync";
-import { supabase } from "./supabase";
+import { sharedSupabase, supabase } from "./supabase";
 
 type AuthState = {
   session: Session | null;
@@ -24,6 +30,27 @@ type AuthState = {
   error: string | null;
 };
 
+type AppMode =
+  | {
+      kind: "workspace";
+    }
+  | {
+      kind: "share";
+      shareToken: string;
+    };
+
+type ShareFeedback =
+  | {
+      kind: "status";
+      message: string;
+    }
+  | {
+      kind: "link";
+      message: string;
+      href: string;
+    };
+
+type ConversationRow = AppDatabase["conversations"];
 type MessageRow = AppDatabase["messages"];
 type DeviceOperationRow = AppDatabase["device_operations"];
 type OperationEventJoinRow = AppDatabase["operation_events"] & {
@@ -43,7 +70,40 @@ type OperationBenchmark = {
   renderedAt: string | null;
 };
 
-function useSupabaseSession() {
+const SHARED_CONVERSATION_STREAM = "shared_conversation";
+
+function readAppMode(): AppMode {
+  if (typeof window === "undefined") {
+    return { kind: "workspace" };
+  }
+
+  const shareToken = new URLSearchParams(window.location.search).get("share")?.trim();
+  if (shareToken) {
+    return {
+      kind: "share",
+      shareToken
+    };
+  }
+
+  return { kind: "workspace" };
+}
+
+function createShareToken() {
+  return crypto.randomUUID().replace(/-/g, "");
+}
+
+function createShareLink(shareToken: string) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("share", shareToken);
+  return url.toString();
+}
+
+function shareDatabaseFilename(shareToken: string) {
+  const safeToken = shareToken.replace(/[^a-z0-9_-]/gi, "").slice(0, 48) || "shared";
+  return `synced-lm-studio-share-${safeToken}.db`;
+}
+
+function useSupabaseSession(supabaseClient: SupabaseClient, allowAnonymous = false) {
   const [state, setState] = useState<AuthState>({
     session: null,
     loading: true,
@@ -54,19 +114,43 @@ function useSupabaseSession() {
     let mounted = true;
 
     const initialize = async () => {
-      const { data, error } = await supabase.auth.getSession();
+      const { data, error } = await supabaseClient.auth.getSession();
       if (!mounted) {
+        return;
+      }
+
+      if (error) {
+        setState({
+          session: null,
+          loading: false,
+          error: error.message
+        });
+        return;
+      }
+
+      if (!data.session && allowAnonymous) {
+        const { data: anonymousData, error: anonymousError } =
+          await supabaseClient.auth.signInAnonymously();
+        if (!mounted) {
+          return;
+        }
+
+        setState({
+          session: anonymousData.session ?? null,
+          loading: false,
+          error: anonymousError?.message ?? null
+        });
         return;
       }
 
       setState({
         session: data.session,
         loading: false,
-        error: error?.message ?? null
+        error: null
       });
     };
 
-    const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: subscription } = supabaseClient.auth.onAuthStateChange((_event, session) => {
       if (!mounted) {
         return;
       }
@@ -83,7 +167,7 @@ function useSupabaseSession() {
       mounted = false;
       subscription.subscription.unsubscribe();
     };
-  }, []);
+  }, [allowAnonymous, supabaseClient]);
 
   return state;
 }
@@ -194,11 +278,15 @@ function AuthCard() {
 function SetupCard({
   title,
   description,
-  detail
+  detail,
+  actionLabel,
+  onAction
 }: {
   title: string;
   description: string;
   detail?: string | null;
+  actionLabel?: string;
+  onAction?: (() => void) | null;
 }) {
   return (
     <div className="auth-shell">
@@ -207,15 +295,11 @@ function SetupCard({
         <h1>{title}</h1>
         <p className="lede">{description}</p>
         {detail ? <p className="error-banner">{detail}</p> : null}
-        <button
-          type="button"
-          className="ghost-button"
-          onClick={() => {
-            void supabase.auth.signOut();
-          }}
-        >
-          Sign out
-        </button>
+        {actionLabel && onAction ? (
+          <button type="button" className="ghost-button" onClick={onAction}>
+            {actionLabel}
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -434,6 +518,92 @@ function OperationBenchmarkCard({ benchmark }: { benchmark: OperationBenchmark }
   );
 }
 
+function SharedConversation({ shareToken }: { shareToken: string }) {
+  const status = useStatus();
+  const streamStatus = useSyncStream({
+    name: SHARED_CONVERSATION_STREAM,
+    parameters: {
+      share_token: shareToken
+    },
+    priority: 1,
+    ttl: 0
+  });
+
+  const { data: conversations } = useQuery<ConversationRow>(
+    `SELECT * FROM ${APP_TABLES.conversations} WHERE share_token = ? LIMIT 1`,
+    [shareToken]
+  );
+  const { data: messages } = useQuery<MessageRow>(
+    `
+      SELECT m.*
+      FROM ${APP_TABLES.messages} m
+      JOIN ${APP_TABLES.conversations} c ON c.id = m.conversation_id
+      WHERE c.share_token = ?
+      ORDER BY m.created_at ASC
+    `,
+    [shareToken]
+  );
+
+  const conversation = conversations[0] ?? null;
+
+  if (!streamStatus || !streamStatus.subscription.hasSynced) {
+    return <div className="auth-shell">Loading shared conversation…</div>;
+  }
+
+  if (!conversation) {
+    return (
+      <SetupCard
+        title="Shared chat unavailable"
+        description="This link no longer maps to an active shared conversation."
+        detail="The owner may have revoked the link, or the token is invalid."
+      />
+    );
+  }
+
+  return (
+    <main className="shared-shell">
+      <section className="shared-header auth-card">
+        <div>
+          <p className="kicker">Shared chat</p>
+          <h1>{conversation.title}</h1>
+        </div>
+        <p className="status-pill">
+          {status.connected ? "PowerSync connected" : "PowerSync reconnecting"}
+        </p>
+        <p className="lede">
+          Live, read-only transcript synced through the conversation&apos;s dedicated PowerSync
+          stream.
+        </p>
+      </section>
+
+      <section className="chat-panel shared-chat-panel">
+        <div className="messages">
+          {messages.map((message) => {
+            const { text } = parseMessageContent(message.content_json);
+
+            return (
+              <article
+                className={message.role === "assistant" ? "message assistant" : "message user"}
+                key={message.id}
+              >
+                <p className="message-role">{message.role}</p>
+                {message.role === "assistant" ? (
+                  <AssistantMessage contentJson={message.content_json} />
+                ) : (
+                  <p className="message-body message-body-plain">{text}</p>
+                )}
+              </article>
+            );
+          })}
+          {messages.length === 0 ? (
+            <p className="lede">This shared conversation does not have any synced messages yet.</p>
+          ) : null}
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function Workspace({ userId, userEmail }: { userId: string; userEmail: string | null | undefined }) {
   const db = usePowerSync();
   const status = useStatus();
@@ -483,6 +653,7 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
 
   const [prompt, setPrompt] = useState("");
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>(readStoredReasoningMode);
+  const [shareFeedback, setShareFeedback] = useState<ShareFeedback | null>(null);
   const renderMeasuredOperations = useRef<Set<string>>(new Set());
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
@@ -509,6 +680,20 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
       setSelectedConversationId(conversations[0].id);
     }
   }, [conversations, selectedConversationId]);
+
+  useEffect(() => {
+    if (!shareFeedback || shareFeedback.kind === "link") {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setShareFeedback((current) => (current?.kind === "status" ? null : current));
+    }, 4_000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [shareFeedback]);
 
   useEffect(() => {
     const visibleMessageIds = new Set(messages.map((message) => message.id));
@@ -740,6 +925,65 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
     );
   };
 
+  const copyConversationShareLink = async () => {
+    if (!selectedConversation) {
+      return;
+    }
+
+    const shareToken = selectedConversation.share_token ?? createShareToken();
+    if (!selectedConversation.share_token) {
+      const now = new Date().toISOString();
+      await db.execute(
+        `
+          UPDATE ${APP_TABLES.conversations}
+          SET share_token = ?, shared_at = ?, updated_at = ?
+          WHERE id = ?
+        `,
+        [shareToken, now, now, selectedConversation.id]
+      );
+    }
+
+    const shareLink = createShareLink(shareToken);
+
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard API is unavailable");
+      }
+
+      await navigator.clipboard.writeText(shareLink);
+      setShareFeedback({
+        kind: "status",
+        message: "Share link copied to the clipboard."
+      });
+    } catch {
+      setShareFeedback({
+        kind: "link",
+        message: "Copy this share link:",
+        href: shareLink
+      });
+    }
+  };
+
+  const revokeConversationShareLink = async () => {
+    if (!selectedConversation?.share_token) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    await db.execute(
+      `
+        UPDATE ${APP_TABLES.conversations}
+        SET share_token = ?, shared_at = ?, updated_at = ?
+        WHERE id = ?
+      `,
+      [null, null, now, selectedConversation.id]
+    );
+    setShareFeedback({
+      kind: "status",
+      message: "Share link revoked."
+    });
+  };
+
   return (
     <div className="app-shell">
       <aside className="rail">
@@ -809,7 +1053,39 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
               <p className="kicker">Conversations</p>
               <h1>{selectedConversation?.title ?? "Select a conversation"}</h1>
             </div>
+            <div className="panel-actions">
+              {selectedConversation?.share_token ? <p className="status-pill">Shared</p> : null}
+              <button
+                className="ghost-button"
+                onClick={() => {
+                  void copyConversationShareLink();
+                }}
+                disabled={!selectedConversation}
+              >
+                {selectedConversation?.share_token ? "Copy share link" : "Share chat"}
+              </button>
+              {selectedConversation?.share_token ? (
+                <button
+                  className="ghost-button"
+                  onClick={() => {
+                    void revokeConversationShareLink();
+                  }}
+                >
+                  Revoke link
+                </button>
+              ) : null}
+            </div>
           </header>
+          {shareFeedback ? (
+            <p className="share-feedback lede">
+              {shareFeedback.message}{" "}
+              {shareFeedback.kind === "link" ? (
+                <a href={shareFeedback.href} target="_blank" rel="noreferrer">
+                  {shareFeedback.href}
+                </a>
+              ) : null}
+            </p>
+          ) : null}
           <div className="conversation-list">
             {conversations.map((conversation) => (
               <button
@@ -819,7 +1095,10 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
                 }
                 onClick={() => setSelectedConversationId(conversation.id)}
               >
-                <span>{conversation.title}</span>
+                <span>
+                  {conversation.title}
+                  {conversation.share_token ? " · Shared" : ""}
+                </span>
                 <small>{formatRelativeTimestamp(conversation.updated_at)}</small>
               </button>
             ))}
@@ -910,7 +1189,9 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
 }
 
 export default function App() {
-  const auth = useSupabaseSession();
+  const mode = useMemo(readAppMode, []);
+  const supabaseClient = mode.kind === "share" ? sharedSupabase : supabase;
+  const auth = useSupabaseSession(supabaseClient, mode.kind === "share");
   const [database, setDatabase] = useState<Awaited<ReturnType<typeof createWebDatabase>> | null>(null);
   const [databaseError, setDatabaseError] = useState<string | null>(null);
 
@@ -929,7 +1210,12 @@ export default function App() {
       return;
     }
 
-    void createWebDatabase(supabase, webConfig.powersyncUrl)
+    void createWebDatabase(supabaseClient, webConfig.powersyncUrl, {
+      allowAnonymous: mode.kind === "share",
+      dbFilename:
+        mode.kind === "share" ? shareDatabaseFilename(mode.shareToken) : "synced-lm-studio.db",
+      readOnly: mode.kind === "share"
+    })
       .then((db) => {
         if (!mounted) {
           return;
@@ -949,13 +1235,48 @@ export default function App() {
     return () => {
       mounted = false;
     };
-  }, [auth.session]);
+  }, [auth.session, mode, supabaseClient]);
 
   if (auth.loading) {
-    return <div className="auth-shell">Loading authentication…</div>;
+    return (
+      <div className="auth-shell">
+        {mode.kind === "share" ? "Preparing shared conversation…" : "Loading authentication…"}
+      </div>
+    );
+  }
+
+  if (auth.error) {
+    return (
+      <SetupCard
+        title={mode.kind === "share" ? "Anonymous auth is unavailable" : "Authentication failed"}
+        description={
+          mode.kind === "share"
+            ? "This share link relies on Supabase anonymous sign-in so the page can fetch a scoped PowerSync token."
+            : "The web client could not restore the current Supabase session."
+        }
+        detail={auth.error}
+        actionLabel={mode.kind === "workspace" ? "Sign out" : undefined}
+        onAction={
+          mode.kind === "workspace"
+            ? () => {
+                void supabase.auth.signOut();
+              }
+            : undefined
+        }
+      />
+    );
   }
 
   if (!auth.session) {
+    if (mode.kind === "share") {
+      return (
+        <SetupCard
+          title="Shared chat unavailable"
+          description="The client could not establish the anonymous session required for this share link."
+        />
+      );
+    }
+
     return <AuthCard />;
   }
 
@@ -964,6 +1285,14 @@ export default function App() {
       <SetupCard
         title="PowerSync isn't configured yet"
         description="Set VITE_POWERSYNC_URL in your Vercel project after the PowerSync instance is ready. Supabase auth is live, but the synced workspace needs a PowerSync endpoint."
+        actionLabel={mode.kind === "workspace" ? "Sign out" : undefined}
+        onAction={
+          mode.kind === "workspace"
+            ? () => {
+                void supabase.auth.signOut();
+              }
+            : undefined
+        }
       />
     );
   }
@@ -971,20 +1300,40 @@ export default function App() {
   if (databaseError) {
     return (
       <SetupCard
-        title="Couldn't initialize the synced workspace"
-        description="The app built successfully, but PowerSync could not be initialized with the current environment."
+        title={mode.kind === "share" ? "Couldn't load the shared chat" : "Couldn't initialize the synced workspace"}
+        description={
+          mode.kind === "share"
+            ? "The share link resolved, but PowerSync could not initialize a scoped read-only replica for it."
+            : "The app built successfully, but PowerSync could not be initialized with the current environment."
+        }
         detail={databaseError}
+        actionLabel={mode.kind === "workspace" ? "Sign out" : undefined}
+        onAction={
+          mode.kind === "workspace"
+            ? () => {
+                void supabase.auth.signOut();
+              }
+            : undefined
+        }
       />
     );
   }
 
   if (!database) {
-    return <div className="auth-shell">Connecting PowerSync…</div>;
+    return (
+      <div className="auth-shell">
+        {mode.kind === "share" ? "Connecting shared PowerSync replica…" : "Connecting PowerSync…"}
+      </div>
+    );
   }
 
   return (
     <PowerSyncContext.Provider value={database}>
-      <Workspace userId={auth.session.user.id} userEmail={auth.session.user.email} />
+      {mode.kind === "share" ? (
+        <SharedConversation shareToken={mode.shareToken} />
+      ) : (
+        <Workspace userId={auth.session.user.id} userEmail={auth.session.user.email} />
+      )}
     </PowerSyncContext.Provider>
   );
 }

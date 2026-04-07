@@ -19,3 +19,11 @@ streams:
       - "SELECT lmstudio_threads.* FROM lmstudio_threads,conversation_messages_param AS bucket WHERE lmstudio_threads.conversation_id = bucket.conversation_id"
       - "SELECT device_operations.* FROM device_operations,device_operations_param AS bucket WHERE device_operations.device_id = bucket.device_id"
       - "SELECT operation_events.* FROM operation_events,operation_events_param AS bucket WHERE operation_events.operation_id = bucket.operation_id"
+  shared_conversation:
+    priority: 1
+    accept_potentially_dangerous_queries: true
+    with:
+      shared_conversation_param: SELECT id AS conversation_id FROM conversations WHERE share_token = subscription.parameter('share_token')
+    queries:
+      - "SELECT conversations.* FROM conversations WHERE conversations.share_token = subscription.parameter('share_token')"
+      - "SELECT messages.* FROM messages,shared_conversation_param AS shared WHERE messages.conversation_id = shared.conversation_id"
