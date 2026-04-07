@@ -211,6 +211,9 @@ class BridgeConnector implements PowerSyncBackendConnector {
   async fetchCredentials(): Promise<PowerSyncCredentials> {
     const session = await ensureBridgeSession(this.supabase);
     console.log("[bridge] PowerSync credentials prepared", summarizeJwt(session.access_token));
+    if (bridgeConfig.logFullJwt) {
+      console.log("[bridge] PowerSync raw JWT", session.access_token);
+    }
     return {
       endpoint: bridgeConfig.powersyncUrl,
       token: session.access_token,
