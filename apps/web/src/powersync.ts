@@ -47,21 +47,6 @@ type CreateWebDatabaseOptions = {
   readOnly?: boolean;
 };
 
-function shouldRetryWithIndexedDb(error: unknown) {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  return (
-    error.message.includes("sqlite3_open_v2") ||
-    error.message.includes("OPFS") ||
-    error.message.includes("AccessHandle") ||
-    error.name === "InvalidStateError" ||
-    error.name === "NotAllowedError" ||
-    error.name === "QuotaExceededError"
-  );
-}
-
 async function ensureSession(supabase: SupabaseClient, allowAnonymous = false) {
   const { data, error } = await supabase.auth.getSession();
   if (error) {
@@ -156,33 +141,20 @@ export async function createWebDatabase(
   powersyncUrl: string,
   options: CreateWebDatabaseOptions = {}
 ) {
-  const connector = new WebConnector(supabase, powersyncUrl, {
-    allowAnonymous: options.allowAnonymous,
-    readOnly: options.readOnly
+  const database = new PowerSyncDatabase({
+    schema: AppSchema,
+    database: new WASQLiteOpenFactory({
+      dbFilename: options.dbFilename ?? "synced-lm-studio.db",
+      vfs: WASQLiteVFS.IDBBatchAtomicVFS
+    })
   });
-  const dbFilename = options.dbFilename ?? "synced-lm-studio.db";
 
-  const connectWithVfs = async (vfs: WASQLiteVFS) => {
-    const database = new PowerSyncDatabase({
-      schema: AppSchema,
-      database: new WASQLiteOpenFactory({
-        dbFilename,
-        vfs
-      })
-    });
+  await database.connect(
+    new WebConnector(supabase, powersyncUrl, {
+      allowAnonymous: options.allowAnonymous,
+      readOnly: options.readOnly
+    })
+  );
 
-    await database.connect(connector);
-    return database;
-  };
-
-  try {
-    return await connectWithVfs(WASQLiteVFS.OPFSCoopSyncVFS);
-  } catch (error) {
-    if (!shouldRetryWithIndexedDb(error)) {
-      throw error;
-    }
-
-    console.warn("Falling back to IDBBatchAtomicVFS after OPFS open failure", error);
-    return connectWithVfs(WASQLiteVFS.IDBBatchAtomicVFS);
-  }
+  return database;
 }
