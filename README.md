@@ -16,6 +16,36 @@ This project adds a thin local gateway with two purposes:
 
 The file-backed chat listing is practical, but it relies on LM Studio's local JSON files in `~/.lmstudio/conversations/`. LM Studio explicitly says those files are JSON and that you should **not** rely on their structure. Treat this as a bridge until you store canonical chat metadata in Supabase.
 
+## Current layout
+
+This repository now includes:
+
+- `apps/web`: the Vite web client that talks to Supabase Auth and PowerSync
+- `apps/bridge`: the stateful LM Studio bridge daemon that watches local files and runs on the same machine as LM Studio
+- `supabase/`: the hosted database schema and policies
+- `powersync/`: PowerSync service and sync configuration
+
+The web client is the part you deploy to Vercel. The bridge is not a Vercel service: it depends on a local LM Studio process, local conversation files, filesystem watchers, and a local SQLite cache.
+
+## Hosted Deployment
+
+### Supabase
+
+The remote schema lives in `supabase/migrations`. After linking the repo to a hosted Supabase project, push the migrations and ensure the `powersync` publication exists. The main migration already creates the publication idempotently.
+
+### Vercel
+
+`vercel.json` is configured to build the Vite app from `apps/web` and publish `apps/web/dist`.
+
+Set these Vercel environment variables for the web client:
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+- `VITE_POWERSYNC_URL` once your PowerSync instance is ready
+- `VITE_DEV_EMAIL` and `VITE_DEV_PASSWORD` only if you want the sign-in form prefilled
+
+If `VITE_POWERSYNC_URL` is not set yet, the deployed app now shows a setup state instead of crashing at startup.
+
 ## Endpoints
 
 ### `GET /health`

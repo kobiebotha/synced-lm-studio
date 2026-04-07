@@ -11,7 +11,6 @@ import type {
   PowerSyncCredentials
 } from "@powersync/web";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { webConfig } from "./config";
 
 function normalizeRow(table: string, row: Record<string, unknown>): Record<string, unknown> {
   const booleanColumns = new Set(BOOLEAN_COLUMNS[table] ?? []);
@@ -52,12 +51,15 @@ async function ensureSession(supabase: SupabaseClient) {
 }
 
 class WebConnector implements PowerSyncBackendConnector {
-  constructor(private readonly supabase: SupabaseClient) {}
+  constructor(
+    private readonly supabase: SupabaseClient,
+    private readonly powersyncUrl: string
+  ) {}
 
   async fetchCredentials(): Promise<PowerSyncCredentials> {
     const session = await ensureSession(this.supabase);
     return {
-      endpoint: webConfig.powersyncUrl,
+      endpoint: this.powersyncUrl,
       token: session.access_token,
       expiresAt: session.expires_at ? new Date(session.expires_at * 1000) : undefined
     };
@@ -105,7 +107,7 @@ class WebConnector implements PowerSyncBackendConnector {
   }
 }
 
-export async function createWebDatabase(supabase: SupabaseClient) {
+export async function createWebDatabase(supabase: SupabaseClient, powersyncUrl: string) {
   const database = new PowerSyncDatabase({
     schema: AppSchema,
     database: new WASQLiteOpenFactory({
@@ -114,8 +116,7 @@ export async function createWebDatabase(supabase: SupabaseClient) {
     })
   });
 
-  await database.connect(new WebConnector(supabase));
-  await database.waitForFirstSync();
+  await database.connect(new WebConnector(supabase, powersyncUrl));
 
   return database;
 }

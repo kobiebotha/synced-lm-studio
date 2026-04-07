@@ -137,7 +137,7 @@ function AuthCard() {
     <div className="auth-shell">
       <form className="auth-card" onSubmit={submit}>
         <p className="kicker">Remote Terminal</p>
-        <h1>{mode === "sign_in" ? "Sign in to the local stack" : "Create a local account"}</h1>
+        <h1>{mode === "sign_in" ? "Sign in to your workspace" : "Create an account"}</h1>
         <p className="lede">
           This web client uses Supabase Auth for both PowerSync credentials and direct PostgREST
           writes.
@@ -187,6 +187,36 @@ function AuthCard() {
           {mode === "sign_in" ? "Need an account? Sign up" : "Already have an account? Sign in"}
         </button>
       </form>
+    </div>
+  );
+}
+
+function SetupCard({
+  title,
+  description,
+  detail
+}: {
+  title: string;
+  description: string;
+  detail?: string | null;
+}) {
+  return (
+    <div className="auth-shell">
+      <div className="auth-card">
+        <p className="kicker">PowerSync</p>
+        <h1>{title}</h1>
+        <p className="lede">{description}</p>
+        {detail ? <p className="error-banner">{detail}</p> : null}
+        <button
+          type="button"
+          className="ghost-button"
+          onClick={() => {
+            void supabase.auth.signOut();
+          }}
+        >
+          Sign out
+        </button>
+      </div>
     </div>
   );
 }
@@ -889,10 +919,17 @@ export default function App() {
 
     if (!auth.session) {
       setDatabase(null);
+      setDatabaseError(null);
       return;
     }
 
-    void createWebDatabase(supabase)
+    if (!webConfig.powersyncUrl) {
+      setDatabase(null);
+      setDatabaseError(null);
+      return;
+    }
+
+    void createWebDatabase(supabase, webConfig.powersyncUrl)
       .then((db) => {
         if (!mounted) {
           return;
@@ -922,8 +959,23 @@ export default function App() {
     return <AuthCard />;
   }
 
+  if (!webConfig.powersyncUrl) {
+    return (
+      <SetupCard
+        title="PowerSync isn't configured yet"
+        description="Set VITE_POWERSYNC_URL in your Vercel project after the PowerSync instance is ready. Supabase auth is live, but the synced workspace needs a PowerSync endpoint."
+      />
+    );
+  }
+
   if (databaseError) {
-    return <div className="auth-shell error-banner">{databaseError}</div>;
+    return (
+      <SetupCard
+        title="Couldn't initialize the synced workspace"
+        description="The app built successfully, but PowerSync could not be initialized with the current environment."
+        detail={databaseError}
+      />
+    );
   }
 
   if (!database) {
