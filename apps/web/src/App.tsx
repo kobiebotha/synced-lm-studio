@@ -3,8 +3,7 @@ import {
   PowerSyncContext,
   usePowerSync,
   useQuery,
-  useStatus,
-  useSyncStream
+  useStatus
 } from "@powersync/react";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import ReactMarkdown from "react-markdown";
@@ -95,6 +94,7 @@ function createShareToken() {
 function createShareLink(shareToken: string) {
   const url = new URL(window.location.href);
   url.searchParams.set("share", shareToken);
+  url.hash = "";
   return url.toString();
 }
 
@@ -520,20 +520,45 @@ function OperationBenchmarkCard({ benchmark }: { benchmark: OperationBenchmark }
 
 function SharedConversation({ shareToken }: { shareToken: string }) {
   const status = useStatus();
-  const streamStatus = useSyncStream({
-    name: SHARED_CONVERSATION_STREAM,
-    parameters: {
-      share_token: shareToken
-    },
-    priority: 1,
-    ttl: 0
-  });
-
-  const { data: conversations } = useQuery<ConversationRow>(
-    `SELECT * FROM ${APP_TABLES.conversations} WHERE share_token = ? LIMIT 1`,
+  const [timedOut, setTimedOut] = useState(false);
+  const sharedStreamOptions = useMemo(
+    () => ({
+      streams: [
+        {
+          name: SHARED_CONVERSATION_STREAM,
+          parameters: {
+            share_token: shareToken
+          },
+          waitForStream: true,
+          priority: 1 as const,
+          ttl: 0
+        }
+      ]
+    }),
     [shareToken]
   );
-  const { data: messages } = useQuery<MessageRow>(
+
+  useEffect(() => {
+    setTimedOut(false);
+    const timeoutId = window.setTimeout(() => {
+      setTimedOut(true);
+    }, 8_000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [shareToken]);
+
+  const {
+    data: conversations,
+    isLoading: conversationsLoading,
+    error: conversationError
+  } = useQuery<ConversationRow>(
+    `SELECT * FROM ${APP_TABLES.conversations} WHERE share_token = ? LIMIT 1`,
+    [shareToken],
+    sharedStreamOptions
+  );
+  const { data: messages, isLoading: messagesLoading, error: messagesError } = useQuery<MessageRow>(
     `
       SELECT m.*
       FROM ${APP_TABLES.messages} m
@@ -541,12 +566,41 @@ function SharedConversation({ shareToken }: { shareToken: string }) {
       WHERE c.share_token = ?
       ORDER BY m.created_at ASC
     `,
-    [shareToken]
+    [shareToken],
+    sharedStreamOptions
   );
 
   const conversation = conversations[0] ?? null;
+  const detail =
+    conversationError instanceof Error
+      ? conversationError.message
+      : messagesError instanceof Error
+        ? messagesError.message
+        : timedOut
+          ? `Connection state: ${status.connected ? "connected" : "reconnecting"}.`
+          : null;
 
-  if (!streamStatus || !streamStatus.subscription.hasSynced) {
+  if (conversationError || messagesError) {
+    return (
+      <SetupCard
+        title="Shared chat failed to load"
+        description="The browser could not finish the first sync for this shared conversation."
+        detail={detail}
+      />
+    );
+  }
+
+  if (conversationsLoading || messagesLoading) {
+    if (timedOut) {
+      return (
+        <SetupCard
+          title="Shared chat is taking too long"
+          description="The browser is still waiting for the first shared-conversation sync to finish."
+          detail={detail}
+        />
+      );
+    }
+
     return <div className="auth-shell">Loading shared conversation…</div>;
   }
 
