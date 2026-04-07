@@ -20,9 +20,12 @@ importers:
 
   apps/bridge:
     dependencies:
+      '@powersync/common':
+        specifier: 1.51.0
+        version: 1.51.0
       '@powersync/node':
         specifier: ^0.18.1
-        version: 0.18.1(@powersync/common@1.49.0)(better-sqlite3@12.8.0)
+        version: 0.18.1(@powersync/common@1.51.0)(better-sqlite3@12.8.0)
       '@supabase/supabase-js':
         specifier: ^2.99.3
         version: 2.99.3
@@ -48,12 +51,15 @@ importers:
       '@journeyapps/wa-sqlite':
         specifier: ^1.5.0
         version: 1.5.0
+      '@powersync/common':
+        specifier: 1.51.0
+        version: 1.51.0
       '@powersync/react':
-        specifier: ^1.9.0
-        version: 1.9.0(@powersync/common@1.49.0)(react@19.2.4)
+        specifier: ^1.10.0
+        version: 1.10.0(@powersync/common@1.51.0)(react@19.2.4)
       '@powersync/web':
-        specifier: ^1.36.0
-        version: 1.36.0(@journeyapps/wa-sqlite@1.5.0)(@powersync/common@1.49.0)
+        specifier: ^1.37.1
+        version: 1.37.1(@journeyapps/wa-sqlite@1.5.0)(@powersync/common@1.51.0)
       '@supabase/supabase-js':
         specifier: ^2.99.3
         version: 2.99.3
@@ -86,8 +92,8 @@ importers:
   packages/shared:
     dependencies:
       '@powersync/common':
-        specifier: ^1.49.0
-        version: 1.49.0
+        specifier: ^1.51.0
+        version: 1.51.0
 
 packages:
 
@@ -674,8 +680,8 @@ packages:
     resolution: {integrity: sha512-fcOB2ONlecO2M/ep8LjPMBwUBMWIwKhSbvXkhz4iJrcN1I1SWl4qqGVw8fyoCpXSb+kSSHrr5dNGzZuZwt0mBA==}
     engines: {node: '>=18.0.0'}
 
-  '@powersync/common@1.49.0':
-    resolution: {integrity: sha512-g6uonubvtmtyx8hS/G5trg9LsBvzHY3tAKHiV7SIQV3Xyz9ONM6NNnjDMP2vcLZVmsOSi8x/QJZmy/ig1YtBMg==}
+  '@powersync/common@1.51.0':
+    resolution: {integrity: sha512-nee5QQhPK8qLQFeocr/HDFCasdwIXhy16w29VPYOkKCed3ry5wKM9gDSh6L7E12D2rjfLrH1Z/e/uWeTC3oqfQ==}
 
   '@powersync/lib-services-framework@0.8.3':
     resolution: {integrity: sha512-qiAXwvXePJ1rfISSmMUy72zZhAHZio4zX6meZXO+PdweN7+UX3Dpbn258XqqguYLPBua0tO5wL3oq6WxFHp4iw==}
@@ -695,10 +701,10 @@ packages:
       better-sqlite3:
         optional: true
 
-  '@powersync/react@1.9.0':
-    resolution: {integrity: sha512-FypJ1RSQXhbpLJ1WOSLi1ph+q6JXAX5GHqXhczaOr0dhngsr1zHIsFTANh6N0tfx838SM+MDgYO1d0LZxv1WWw==}
+  '@powersync/react@1.10.0':
+    resolution: {integrity: sha512-orM29qocbF8zYTBM27j9nPNztyplpbNVaw8djpqxl8N2wESqHTbHOKpatg+Fa5aofgjzmrkiGwevJvCbiWYYWQ==}
     peerDependencies:
-      '@powersync/common': ^1.47.0
+      '@powersync/common': ^1.51.0
       react: '*'
 
   '@powersync/service-client@0.0.3':
@@ -728,12 +734,12 @@ packages:
   '@powersync/service-types@0.15.0':
     resolution: {integrity: sha512-wIdHCT+vhwoJAMZ414/dwG8fd51+fEWnPbwShkwNE5XTwA0UGOT8aGyVZqzT8PT0sVos5famYYqG203Mjb7q6g==}
 
-  '@powersync/web@1.36.0':
-    resolution: {integrity: sha512-ZURHZ52gqMmPdKwXQJ36+LNmDyXxyPeInZaxn46OJXeYisLslAXjYlm+NcGYlPnxtIgMYbBmnJdd89ARdtYUKg==}
+  '@powersync/web@1.37.1':
+    resolution: {integrity: sha512-tw2GfifpgfAeHNH+cFKEG5dQN0mhsoqnRv258ld45mcMkVZU5aTFGhglV4mn05ffe5zinFBP02g4dBM8T9ofYw==}
     hasBin: true
     peerDependencies:
       '@journeyapps/wa-sqlite': ^1.5.0
-      '@powersync/common': ^1.49.0
+      '@powersync/common': ^1.51.0
 
   '@protobufjs/aspromise@1.1.2':
     resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
@@ -3412,9 +3418,8 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@powersync/common@1.49.0':
+  '@powersync/common@1.51.0':
     dependencies:
-      async-mutex: 0.5.0
       event-iterator: 2.0.0
 
   '@powersync/lib-services-framework@0.8.3':
@@ -3458,9 +3463,9 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@powersync/node@0.18.1(@powersync/common@1.49.0)(better-sqlite3@12.8.0)':
+  '@powersync/node@0.18.1(@powersync/common@1.51.0)(better-sqlite3@12.8.0)':
     dependencies:
-      '@powersync/common': 1.49.0
+      '@powersync/common': 1.51.0
       async-mutex: 0.5.0
       bson: 6.10.4
       comlink: 4.4.2
@@ -3468,9 +3473,9 @@ snapshots:
     optionalDependencies:
       better-sqlite3: 12.8.0
 
-  '@powersync/react@1.9.0(@powersync/common@1.49.0)(react@19.2.4)':
+  '@powersync/react@1.10.0(@powersync/common@1.51.0)(react@19.2.4)':
     dependencies:
-      '@powersync/common': 1.49.0
+      '@powersync/common': 1.51.0
       react: 19.2.4
 
   '@powersync/service-client@0.0.3(@types/json-schema@7.0.15)':
@@ -3572,11 +3577,10 @@ snapshots:
     transitivePeerDependencies:
       - babel-plugin-macros
 
-  '@powersync/web@1.36.0(@journeyapps/wa-sqlite@1.5.0)(@powersync/common@1.49.0)':
+  '@powersync/web@1.37.1(@journeyapps/wa-sqlite@1.5.0)(@powersync/common@1.51.0)':
     dependencies:
       '@journeyapps/wa-sqlite': 1.5.0
-      '@powersync/common': 1.49.0
-      async-mutex: 0.5.0
+      '@powersync/common': 1.51.0
       bson: 6.10.4
       comlink: 4.4.2
       commander: 12.1.0

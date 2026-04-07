@@ -11,7 +11,7 @@
     "generate:conversation": "node scripts/generate-conversation.mjs",
     "infra:supabase:start": "supabase start",
     "infra:supabase:status": "supabase status -o env",
-    "infra:powersync:start": "pnpm exec powersync docker start",
+    "infra:powersync:start": "node scripts/write-powersync-sync-env.mjs && pnpm exec powersync docker start",
     "infra:powersync:status": "API_URL=http://127.0.0.1:8080 PS_ADMIN_TOKEN=dev-token-do-not-use-in-production pnpm exec powersync status",
     "bootstrap:local-env": "node scripts/write-local-env.mjs",
     "bootstrap:dev-user": "node scripts/bootstrap-dev-user.mjs",

@@ -9,6 +9,7 @@
     "check": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@powersync/common": "1.51.0",
     "@powersync/node": "^0.18.1",
     "@supabase/supabase-js": "^2.99.3",
     "@synced-lm-studio/shared": "workspace:*",
