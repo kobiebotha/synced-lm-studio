@@ -1,48 +1,21 @@
 config:
   edition: 3
 
-bucket_definitions:
-  user_devices:
-    parameters: |
-      SELECT request.user_id() AS user_id
-    data:
-      - SELECT * FROM devices WHERE owner_user_id = bucket.user_id
-
-  device_models:
-    parameters: |
-      SELECT id AS device_id
-      FROM devices
-      WHERE owner_user_id = request.user_id()
-    data:
-      - SELECT * FROM device_models WHERE device_id = bucket.device_id
-
-  user_conversations:
-    parameters: |
-      SELECT request.user_id() AS user_id
-    data:
-      - SELECT * FROM conversations WHERE owner_user_id = bucket.user_id
-
-  conversation_messages:
-    parameters: |
-      SELECT id AS conversation_id
-      FROM conversations
-      WHERE owner_user_id = request.user_id()
-    data:
-      - SELECT * FROM messages WHERE conversation_id = bucket.conversation_id
-      - SELECT * FROM lmstudio_threads WHERE conversation_id = bucket.conversation_id
-
-  device_operations:
-    parameters: |
-      SELECT id AS device_id
-      FROM devices
-      WHERE owner_user_id = request.user_id()
-    data:
-      - SELECT * FROM device_operations WHERE device_id = bucket.device_id
-
-  operation_events:
-    parameters: |
-      SELECT id AS operation_id
-      FROM device_operations
-      WHERE requested_by_user_id = request.user_id()
-    data:
-      - SELECT * FROM operation_events WHERE operation_id = bucket.operation_id
+streams:
+  # This Sync Stream has been translated from bucket definitions. There may be
+  # more efficient ways to express these queries.
+  migrated_to_streams:
+    auto_subscribe: true
+    with:
+      device_models_param: SELECT id AS device_id FROM devices WHERE owner_user_id = auth.user_id()
+      conversation_messages_param: SELECT id AS conversation_id FROM conversations WHERE owner_user_id = auth.user_id()
+      device_operations_param: SELECT id AS device_id FROM devices WHERE owner_user_id = auth.user_id()
+      operation_events_param: SELECT id AS operation_id FROM device_operations WHERE requested_by_user_id = auth.user_id()
+    queries:
+      - SELECT * FROM devices WHERE owner_user_id = auth.user_id()
+      - "SELECT device_models.* FROM device_models,device_models_param AS bucket WHERE device_models.device_id = bucket.device_id"
+      - SELECT * FROM conversations WHERE owner_user_id = auth.user_id()
+      - "SELECT messages.* FROM messages,conversation_messages_param AS bucket WHERE messages.conversation_id = bucket.conversation_id"
+      - "SELECT lmstudio_threads.* FROM lmstudio_threads,conversation_messages_param AS bucket WHERE lmstudio_threads.conversation_id = bucket.conversation_id"
+      - "SELECT device_operations.* FROM device_operations,device_operations_param AS bucket WHERE device_operations.device_id = bucket.device_id"
+      - "SELECT operation_events.* FROM operation_events,operation_events_param AS bucket WHERE operation_events.operation_id = bucket.operation_id"
