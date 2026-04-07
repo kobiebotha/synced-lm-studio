@@ -3,5 +3,5 @@
   "framework": "vite",
   "installCommand": "pnpm install --frozen-lockfile",
   "buildCommand": "pnpm --filter @synced-lm-studio/web build",
-  "outputDirectory": "apps/web/dist"
+  "outputDirectory": "dist"
 }
