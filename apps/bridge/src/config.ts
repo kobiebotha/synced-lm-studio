@@ -7,8 +7,78 @@ import dotenv from "dotenv";
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(moduleDir, "..");
 
-dotenv.config({ path: path.join(appRoot, ".env.local") });
-dotenv.config({ path: path.join(appRoot, ".env") });
+function loadEnvFile(filename: string, options?: { override?: boolean; optional?: boolean }) {
+  const envPath = path.isAbsolute(filename) ? filename : path.join(appRoot, filename);
+  const result = dotenv.config({
+    path: envPath,
+    override: options?.override ?? false
+  });
+  const error = result.error as NodeJS.ErrnoException | undefined;
+
+  if (!error) {
+    return envPath;
+  }
+
+  if (options?.optional && error.code === "ENOENT") {
+    return envPath;
+  }
+
+  throw error;
+}
+
+function inferProfileFromEnvPath(envPath: string | null) {
+  if (!envPath) {
+    return null;
+  }
+
+  const basename = path.basename(envPath);
+  if (basename === ".env.local") {
+    return "local";
+  }
+
+  if (basename.startsWith(".env.")) {
+    return basename.slice(".env.".length);
+  }
+
+  return null;
+}
+
+function resolveSelectedEnvPath() {
+  loadEnvFile(".env", { optional: true });
+
+  const explicitEnvFile = process.env.BRIDGE_ENV_FILE?.trim();
+  if (explicitEnvFile) {
+    return loadEnvFile(explicitEnvFile, { override: true });
+  }
+
+  const explicitProfile =
+    process.env.BRIDGE_ENV_PROFILE?.trim() || process.env.BRIDGE_PROFILE?.trim();
+  if (explicitProfile) {
+    return loadEnvFile(`.env.${explicitProfile}`, { override: true });
+  }
+
+  return loadEnvFile(".env.local", { override: true, optional: true });
+}
+
+function uniqueSlugs(values: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  const resolved: string[] = [];
+
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+
+    if (seen.has(value)) {
+      continue;
+    }
+
+    seen.add(value);
+    resolved.push(value);
+  }
+
+  return resolved;
+}
 
 function required(name: string): string {
   const value = process.env[name];
@@ -65,9 +135,25 @@ function storageSlug() {
   }
 }
 
+const selectedEnvPath = resolveSelectedEnvPath();
+const inferredProfile = inferProfileFromEnvPath(selectedEnvPath);
 const bridgeStorageSlug = storageSlug();
+const bridgeInstanceSlug =
+  toFilenameSlug(
+    process.env.BRIDGE_INSTANCE_NAME ??
+      process.env.BRIDGE_PROFILE ??
+      inferredProfile ??
+      bridgeStorageSlug
+  ) || "bridge";
+const bridgeStateSlug = uniqueSlugs([bridgeInstanceSlug, bridgeStorageSlug]).join("-");
+const bridgeDefaultDeviceName =
+  inferredProfile && inferredProfile !== "local"
+    ? `Local LM Studio (${inferredProfile})`
+    : "Local LM Studio";
 
 export const bridgeConfig = {
+  envPath: selectedEnvPath,
+  envProfile: inferredProfile,
   supabaseUrl: required("SUPABASE_URL"),
   supabaseAnonKey: required("SUPABASE_ANON_KEY"),
   supabaseEmail: process.env.SUPABASE_EMAIL ?? "",
@@ -77,13 +163,13 @@ export const bridgeConfig = {
   lmStudioConversationsDir:
     process.env.LM_STUDIO_CONVERSATIONS_DIR ??
     path.join(os.homedir(), ".cache", "lm-studio", "conversations"),
-  bridgeDeviceName: process.env.BRIDGE_DEVICE_NAME ?? "Local LM Studio",
-  bridgeMachineKey: process.env.BRIDGE_MACHINE_KEY ?? `lmstudio-${os.hostname()}`,
+  bridgeDeviceName: process.env.BRIDGE_DEVICE_NAME ?? bridgeDefaultDeviceName,
+  bridgeMachineKey: process.env.BRIDGE_MACHINE_KEY ?? `lmstudio-${bridgeInstanceSlug}`,
   bridgeDbFilename:
-    process.env.BRIDGE_DB_FILENAME ?? `.data/bridge-${bridgeStorageSlug}.db`,
+    process.env.BRIDGE_DB_FILENAME ?? `.data/bridge-${bridgeStateSlug}.db`,
   bridgeSessionFilename:
     process.env.BRIDGE_SESSION_FILENAME ??
-    `.data/bridge-session-${bridgeStorageSlug}.json`,
+    `.data/bridge-session-${bridgeStateSlug}.json`,
   logFullJwt: boolean("BRIDGE_LOG_FULL_JWT", false),
   pollIntervalMs: numeric("BRIDGE_POLL_INTERVAL_MS", 2000),
   heartbeatIntervalMs: numeric("BRIDGE_HEARTBEAT_INTERVAL_MS", 30000),

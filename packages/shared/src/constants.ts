@@ -52,6 +52,7 @@ export const MESSAGE_ROLE = {
 
 export const MESSAGE_SOURCE = {
   app: "app",
+  share: "share",
   bridge: "bridge",
   lmStudio: "lmstudio"
 } as const;

@@ -268,6 +268,16 @@ class BridgeConnector implements PowerSyncBackendConnector {
 
 export async function createBridgeDatabase() {
   await fs.mkdir(path.dirname(bridgeConfig.bridgeDbFilename), { recursive: true });
+  console.log("[bridge] Using bridge profile", {
+    envPath: bridgeConfig.envPath,
+    envProfile: bridgeConfig.envProfile,
+    machineKey: bridgeConfig.bridgeMachineKey,
+    dbFilename: bridgeConfig.bridgeDbFilename,
+    sessionFilename: bridgeConfig.bridgeSessionFilename,
+    powersyncUrl: bridgeConfig.powersyncUrl,
+    supabaseUrl: bridgeConfig.supabaseUrl,
+    lmStudioConversationsDir: bridgeConfig.lmStudioConversationsDir
+  });
 
   const supabase = createClient(bridgeConfig.supabaseUrl, bridgeConfig.supabaseAnonKey, {
     auth: {

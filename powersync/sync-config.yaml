@@ -24,6 +24,9 @@ streams:
     accept_potentially_dangerous_queries: true
     with:
       shared_conversation_param: SELECT id AS conversation_id FROM conversations WHERE share_token = subscription.parameter('share_token')
+      shared_operation_param: SELECT device_operations.id AS operation_id FROM device_operations JOIN conversations ON conversations.id = device_operations.conversation_id WHERE conversations.share_token = subscription.parameter('share_token')
     queries:
       - "SELECT conversations.* FROM conversations WHERE conversations.share_token = subscription.parameter('share_token')"
       - "SELECT messages.* FROM messages,shared_conversation_param AS shared WHERE messages.conversation_id = shared.conversation_id"
+      - "SELECT device_operations.* FROM device_operations,shared_conversation_param AS shared WHERE device_operations.conversation_id = shared.conversation_id"
+      - "SELECT operation_events.* FROM operation_events,shared_operation_param AS shared WHERE operation_events.operation_id = shared.operation_id"

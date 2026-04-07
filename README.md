@@ -27,6 +27,50 @@ This repository now includes:
 
 The web client is the part you deploy to Vercel. The bridge is not a Vercel service: it depends on a local LM Studio process, local conversation files, filesystem watchers, and a local SQLite cache.
 
+## Bridge profiles
+
+If you want one bridge pointed at a local dev stack and another pointed at hosted Supabase and PowerSync, do not share a single `apps/bridge/.env.local`.
+
+Use one env file per bridge target instead:
+
+- `apps/bridge/.env.local` for the local stack
+- `apps/bridge/.env.cloud` for hosted testing
+
+Each bridge profile should have its own:
+
+- `BRIDGE_MACHINE_KEY`
+- `BRIDGE_DB_FILENAME`
+- `BRIDGE_SESSION_FILENAME`
+
+Sharing the same LM Studio instance and conversation directory is fine. Sharing the same bridge DB/session files is not.
+
+The bridge loader now supports profile-specific env files:
+
+```bash
+pnpm dev:bridge:local
+pnpm dev:bridge:cloud
+```
+
+Or with an explicit file:
+
+```bash
+BRIDGE_ENV_FILE=.env.cloud pnpm dev:bridge
+```
+
+To generate a local profile file from the local Supabase CLI output:
+
+```bash
+pnpm bootstrap:local-env
+```
+
+To generate a second profile file, for example `apps/bridge/.env.staging` and `apps/web/.env.staging`:
+
+```bash
+ENV_PROFILE=staging pnpm bootstrap:local-env
+```
+
+The bridge can use that file immediately with `BRIDGE_ENV_FILE=.env.staging`. The web app follows Vite's normal env loading, so a non-local web profile should be used with the matching Vite mode.
+
 ## Hosted Deployment
 
 ### Supabase

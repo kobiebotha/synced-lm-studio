@@ -3,8 +3,9 @@ dist
 .DS_Store
 *.log
 .data
-apps/bridge/.env.local
-apps/web/.env.local
+apps/bridge/.env.*
+!apps/bridge/.env.example
+apps/web/.env.*
 .vercel
 public/@powersync
 supabase/.temp

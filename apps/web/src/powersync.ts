@@ -46,7 +46,6 @@ type CreateWebDatabaseOptions = {
   allowAnonymous?: boolean;
   dbFilename?: string;
   flags?: WebPowerSyncFlags;
-  readOnly?: boolean;
 };
 
 async function ensureSession(supabase: SupabaseClient, allowAnonymous = false) {
@@ -79,7 +78,6 @@ class WebConnector implements PowerSyncBackendConnector {
     private readonly powersyncUrl: string,
     private readonly options: {
       allowAnonymous?: boolean;
-      readOnly?: boolean;
     } = {}
   ) {}
 
@@ -93,10 +91,6 @@ class WebConnector implements PowerSyncBackendConnector {
   }
 
   async uploadData(database: AbstractPowerSyncDatabase): Promise<void> {
-    if (this.options.readOnly) {
-      return;
-    }
-
     const transaction = await database.getNextCrudTransaction();
     if (!transaction) {
       return;
@@ -155,8 +149,7 @@ export async function createWebDatabase(
 
   await database.connect(
     new WebConnector(supabase, powersyncUrl, {
-      allowAnonymous: options.allowAnonymous,
-      readOnly: options.readOnly
+      allowAnonymous: options.allowAnonymous
     })
   );
 

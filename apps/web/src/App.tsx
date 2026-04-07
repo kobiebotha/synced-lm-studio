@@ -5,6 +5,7 @@ import {
   useQuery,
   useStatus
 } from "@powersync/react";
+import type { AbstractPowerSyncDatabase } from "@powersync/web";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import ReactMarkdown from "react-markdown";
 import {
@@ -14,6 +15,7 @@ import {
   DEVICE_PAIRING_STATUS,
   DEVICE_OPERATION_STATUS,
   DEVICE_OPERATION_TYPE,
+  MESSAGE_SOURCE,
   parseMessageContent,
   serializeMessageContent,
   truncateTitle,
@@ -68,6 +70,8 @@ type OperationBenchmark = {
   bridgeResponseWrittenAt: string | null;
   renderedAt: string | null;
 };
+
+type WebDatabase = Awaited<ReturnType<typeof createWebDatabase>>;
 
 const SHARED_CONVERSATION_STREAM = "shared_conversation";
 
@@ -330,6 +334,138 @@ const REASONING_OPTIONS: Array<{ value: ReasoningMode; label: string }> = [
   { value: "on", label: "Extra High" }
 ];
 
+async function queueConversationPrompt({
+  db,
+  conversationId,
+  createConversation,
+  prompt,
+  reasoningMode,
+  requestedByUserId,
+  source,
+  targetDeviceId,
+  recordBenchmark
+}: {
+  db: AbstractPowerSyncDatabase;
+  conversationId: string;
+  createConversation?: {
+    ownerUserId: string;
+    title: string;
+  };
+  prompt: string;
+  reasoningMode: ReasoningMode;
+  requestedByUserId: string;
+  source: string;
+  targetDeviceId: string;
+  recordBenchmark?: boolean;
+}) {
+  const trimmedPrompt = prompt.trim();
+  if (!trimmedPrompt) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const messageId = crypto.randomUUID();
+  const operationId = crypto.randomUUID();
+
+  await db.writeTransaction(async (tx) => {
+    if (createConversation) {
+      await tx.execute(
+        `
+          INSERT INTO ${APP_TABLES.conversations}
+            (id, owner_user_id, target_device_id, title, status, metadata_json, created_at, updated_at, last_message_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          conversationId,
+          createConversation.ownerUserId,
+          targetDeviceId,
+          createConversation.title || DEFAULT_CONVERSATION_TITLE,
+          "active",
+          JSON.stringify({}),
+          now,
+          now,
+          now
+        ]
+      );
+    }
+
+    await tx.execute(
+      `
+        INSERT INTO ${APP_TABLES.messages}
+          (id, conversation_id, role, content_json, source, model_identifier, token_count, lmstudio_response_id, error_text, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        messageId,
+        conversationId,
+        "user",
+        serializeMessageContent(trimmedPrompt),
+        source,
+        null,
+        Math.max(8, Math.ceil(trimmedPrompt.length / 4)),
+        null,
+        null,
+        now,
+        now
+      ]
+    );
+
+    await tx.execute(
+      `
+        INSERT INTO ${APP_TABLES.deviceOperations}
+          (id, device_id, conversation_id, requested_by_user_id, type, payload_json, status, error_text, created_at, claimed_at, completed_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        operationId,
+        targetDeviceId,
+        conversationId,
+        requestedByUserId,
+        DEVICE_OPERATION_TYPE.sendMessage,
+        JSON.stringify({
+          user_message_id: messageId,
+          reasoning: reasoningMode,
+          materialize_sidebar: true
+        }),
+        DEVICE_OPERATION_STATUS.pending,
+        null,
+        now,
+        null,
+        null,
+        now
+      ]
+    );
+
+    if (!recordBenchmark) {
+      return;
+    }
+
+    await tx.execute(
+      `
+        INSERT INTO ${APP_TABLES.operationEvents}
+          (id, operation_id, device_id, event_type, payload_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [
+        crypto.randomUUID(),
+        operationId,
+        targetDeviceId,
+        OPERATION_EVENT_TYPE.benchmarkWebSubmit,
+        JSON.stringify({
+          user_message_id: messageId
+        }),
+        now
+      ]
+    );
+  });
+
+  return {
+    conversationId,
+    messageId,
+    operationId
+  };
+}
+
 function readStoredReasoningMode(): ReasoningMode {
   if (typeof window === "undefined") {
     return "on";
@@ -518,8 +654,13 @@ function OperationBenchmarkCard({ benchmark }: { benchmark: OperationBenchmark }
   );
 }
 
-function SharedConversation({ shareToken }: { shareToken: string }) {
+function SharedConversation({ shareToken, userId }: { shareToken: string; userId: string }) {
+  const db = usePowerSync();
   const status = useStatus();
+  const [prompt, setPrompt] = useState("");
+  const [reasoningMode, setReasoningMode] = useState<ReasoningMode>(readStoredReasoningMode);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
   const [timedOut, setTimedOut] = useState(false);
   const sharedStreamOptions = useMemo(
     () => ({
@@ -549,6 +690,10 @@ function SharedConversation({ shareToken }: { shareToken: string }) {
     };
   }, [shareToken]);
 
+  useEffect(() => {
+    window.localStorage.setItem("synced-lm-studio:reasoning-mode", reasoningMode);
+  }, [reasoningMode]);
+
   const {
     data: conversations,
     isLoading: conversationsLoading,
@@ -569,18 +714,63 @@ function SharedConversation({ shareToken }: { shareToken: string }) {
     [shareToken],
     sharedStreamOptions
   );
+  const { data: operations = [], error: operationsError } = useQuery<DeviceOperationRow>(
+    `
+      SELECT o.*
+      FROM ${APP_TABLES.deviceOperations} o
+      JOIN ${APP_TABLES.conversations} c ON c.id = o.conversation_id
+      WHERE c.share_token = ?
+      ORDER BY o.created_at DESC
+      LIMIT 20
+    `,
+    [shareToken],
+    sharedStreamOptions
+  );
 
   const conversation = conversations[0] ?? null;
+  const activeSendCount = operations.filter(
+    (operation) =>
+      operation.type === DEVICE_OPERATION_TYPE.sendMessage &&
+      (operation.status === DEVICE_OPERATION_STATUS.pending ||
+        operation.status === DEVICE_OPERATION_STATUS.running)
+  ).length;
   const detail =
     conversationError instanceof Error
       ? conversationError.message
       : messagesError instanceof Error
         ? messagesError.message
+        : operationsError instanceof Error
+          ? operationsError.message
         : timedOut
           ? `Connection state: ${status.connected ? "connected" : "reconnecting"}.`
           : null;
 
-  if (conversationError || messagesError) {
+  const sendPrompt = async () => {
+    if (!conversation?.target_device_id || !prompt.trim()) {
+      return;
+    }
+
+    setSending(true);
+    setSendError(null);
+    try {
+      await queueConversationPrompt({
+        db,
+        conversationId: conversation.id,
+        prompt,
+        reasoningMode,
+        requestedByUserId: userId,
+        source: MESSAGE_SOURCE.share,
+        targetDeviceId: conversation.target_device_id
+      });
+      setPrompt("");
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : "Failed to queue the shared message");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (conversationError || messagesError || operationsError) {
     return (
       <SetupCard
         title="Shared chat failed to load"
@@ -625,8 +815,8 @@ function SharedConversation({ shareToken }: { shareToken: string }) {
           {status.connected ? "PowerSync connected" : "PowerSync reconnecting"}
         </p>
         <p className="lede">
-          Live, read-only transcript synced through the conversation&apos;s dedicated PowerSync
-          stream.
+          Anyone with this link can continue the conversation anonymously through the dedicated
+          PowerSync stream.
         </p>
       </section>
 
@@ -652,6 +842,53 @@ function SharedConversation({ shareToken }: { shareToken: string }) {
           {messages.length === 0 ? (
             <p className="lede">This shared conversation does not have any synced messages yet.</p>
           ) : null}
+          {activeSendCount > 0 ? (
+            <p className="status-pill">
+              {activeSendCount === 1 ? "LM Studio is responding" : `${activeSendCount} replies in flight`}
+            </p>
+          ) : null}
+        </div>
+        <div className="composer">
+          <div className="composer-shell">
+            <textarea
+              placeholder="Continue this shared conversation…"
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+            />
+            {sendError ? <p className="error-banner">{sendError}</p> : null}
+            {!conversation.target_device_id ? (
+              <p className="lede">
+                This shared conversation is no longer attached to an LM Studio bridge, so new
+                prompts cannot be queued.
+              </p>
+            ) : null}
+            <div className="composer-footer">
+              <div className="composer-actions">
+                <label className="composer-select">
+                  <span>Think</span>
+                  <select
+                    value={reasoningMode}
+                    onChange={(event) => setReasoningMode(event.target.value as ReasoningMode)}
+                  >
+                    {REASONING_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <span className="lede">Posting anonymously</span>
+              </div>
+              <button
+                onClick={() => {
+                  void sendPrompt();
+                }}
+                disabled={!conversation.target_device_id || !prompt.trim() || sending}
+              >
+                {sending ? "Sending…" : "Send"}
+              </button>
+            </div>
+          </div>
         </div>
       </section>
     </main>
@@ -850,98 +1087,24 @@ function Workspace({ userId, userEmail }: { userId: string; userEmail: string | 
       return;
     }
 
-    const now = new Date().toISOString();
     const conversationId = activeConversationId ?? crypto.randomUUID();
-    const messageId = crypto.randomUUID();
-    const operationId = crypto.randomUUID();
     const title = selectedConversation?.title ?? truncateTitle(prompt, 40);
 
-    await db.writeTransaction(async (tx) => {
-      if (!activeConversationId) {
-        await tx.execute(
-          `
-            INSERT INTO ${APP_TABLES.conversations}
-              (id, owner_user_id, target_device_id, title, status, metadata_json, created_at, updated_at, last_message_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `,
-          [
-            conversationId,
-            userId,
-            activeDeviceId,
-            title || DEFAULT_CONVERSATION_TITLE,
-            "active",
-            JSON.stringify({}),
-            now,
-            now,
-            now
-          ]
-        );
-      }
-
-      await tx.execute(
-        `
-          INSERT INTO ${APP_TABLES.messages}
-            (id, conversation_id, role, content_json, source, model_identifier, token_count, lmstudio_response_id, error_text, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          messageId,
-          conversationId,
-          "user",
-          serializeMessageContent(prompt.trim()),
-          "app",
-          null,
-          Math.max(8, Math.ceil(prompt.trim().length / 4)),
-          null,
-          null,
-          now,
-          now
-        ]
-      );
-
-      await tx.execute(
-        `
-          INSERT INTO ${APP_TABLES.deviceOperations}
-            (id, device_id, conversation_id, requested_by_user_id, type, payload_json, status, error_text, created_at, claimed_at, completed_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          operationId,
-          activeDeviceId,
-          conversationId,
-          userId,
-          DEVICE_OPERATION_TYPE.sendMessage,
-          JSON.stringify({
-            user_message_id: messageId,
-            reasoning: reasoningMode,
-            materialize_sidebar: true
-          }),
-          DEVICE_OPERATION_STATUS.pending,
-          null,
-          now,
-          null,
-          null,
-          now
-        ]
-      );
-
-      await tx.execute(
-        `
-          INSERT INTO ${APP_TABLES.operationEvents}
-            (id, operation_id, device_id, event_type, payload_json, created_at)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `,
-        [
-          crypto.randomUUID(),
-          operationId,
-          activeDeviceId,
-          OPERATION_EVENT_TYPE.benchmarkWebSubmit,
-          JSON.stringify({
-            user_message_id: messageId
-          }),
-          now
-        ]
-      );
+    await queueConversationPrompt({
+      db,
+      conversationId,
+      createConversation: activeConversationId
+        ? undefined
+        : {
+            ownerUserId: userId,
+            title
+          },
+      prompt,
+      reasoningMode,
+      requestedByUserId: userId,
+      source: MESSAGE_SOURCE.app,
+      targetDeviceId: activeDeviceId,
+      recordBenchmark: true
     });
 
     setPrompt("");
@@ -1246,9 +1409,9 @@ export default function App() {
   const mode = useMemo(readAppMode, []);
   const supabaseClient = mode.kind === "share" ? sharedSupabase : supabase;
   const auth = useSupabaseSession(supabaseClient, mode.kind === "share");
-  const [database, setDatabase] = useState<Awaited<ReturnType<typeof createWebDatabase>> | null>(null);
+  const [database, setDatabase] = useState<WebDatabase | null>(null);
   const [databaseError, setDatabaseError] = useState<string | null>(null);
-  const databaseRef = useRef<Awaited<ReturnType<typeof createWebDatabase>> | null>(null);
+  const databaseRef = useRef<WebDatabase | null>(null);
   const initSequenceRef = useRef(0);
   const databaseKey =
     auth.session == null
@@ -1257,7 +1420,7 @@ export default function App() {
         ? `share:${mode.shareToken}`
         : `workspace:${auth.session.user.id}`;
 
-  const closeDatabase = async (db: Awaited<ReturnType<typeof createWebDatabase>> | null) => {
+  const closeDatabase = async (db: WebDatabase | null) => {
     if (!db) {
       return;
     }
@@ -1297,8 +1460,7 @@ export default function App() {
                 enableMultiTabs: false,
                 useWebWorker: false
               }
-            : undefined,
-        readOnly: mode.kind === "share"
+            : undefined
       });
 
       if (cancelled || initSequence !== initSequenceRef.current) {
@@ -1400,7 +1562,7 @@ export default function App() {
         title={mode.kind === "share" ? "Couldn't load the shared chat" : "Couldn't initialize the synced workspace"}
         description={
           mode.kind === "share"
-            ? "The share link resolved, but PowerSync could not initialize a scoped read-only replica for it."
+            ? "The share link resolved, but PowerSync could not initialize a scoped shared replica for it."
             : "The app built successfully, but PowerSync could not be initialized with the current environment."
         }
         detail={databaseError}
@@ -1427,7 +1589,7 @@ export default function App() {
   return (
     <PowerSyncContext.Provider value={database}>
       {mode.kind === "share" ? (
-        <SharedConversation shareToken={mode.shareToken} />
+        <SharedConversation shareToken={mode.shareToken} userId={auth.session.user.id} />
       ) : (
         <Workspace userId={auth.session.user.id} userEmail={auth.session.user.email} />
       )}
